@@ -200,6 +200,21 @@ router.put('/:id', authRequired, (req, res) => {
   res.json({ code: 0, message: '修改成功', data: db.prepare('SELECT * FROM scores WHERE id = ?').get(id) });
 });
 
+/** DELETE /api/scores/batch  批量删除成绩（body: { ids: number[] }） */
+router.delete('/batch', authRequired, (req, res) => {
+  const ids = req.body?.ids;
+  if (!Array.isArray(ids) || ids.length === 0) {
+    return res.status(400).json({ code: 400, message: '请先选择要删除的记录' });
+  }
+  const idList = ids.map(Number).filter((n) => Number.isInteger(n) && n > 0);
+  if (idList.length === 0) {
+    return res.status(400).json({ code: 400, message: '无效的记录 ID' });
+  }
+  const placeholders = idList.map(() => '?').join(',');
+  const info = db.prepare(`DELETE FROM scores WHERE id IN (${placeholders})`).run(...idList);
+  res.json({ code: 0, message: `已删除 ${info.changes} 条记录`, data: { deleted: info.changes } });
+});
+
 /** DELETE /api/scores/:id  删除成绩 */
 router.delete('/:id', authRequired, (req, res) => {
   const info = db.prepare('DELETE FROM scores WHERE id = ?').run(Number(req.params.id));

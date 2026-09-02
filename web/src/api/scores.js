@@ -5,6 +5,7 @@ export const getScoreOptions = () => request.get('/scores/options');
 export const createScore = (data) => request.post('/scores', data);
 export const updateScore = (id, data) => request.put(`/scores/${id}`, data);
 export const deleteScore = (id) => request.delete(`/scores/${id}`);
+export const deleteScoresBatch = (ids) => request.delete('/scores/batch', { data: { ids } });
 export const importScores = (formData) =>
   request.post('/scores/import', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },

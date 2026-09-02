@@ -63,18 +63,24 @@
           <el-button type="success" :icon="Upload" @click="importVisible = true">Excel 导入</el-button>
           <el-button :icon="Download" @click="handleDownloadTemplate">下载导入模板</el-button>
           <el-button type="warning" :icon="RefreshRight" :loading="syncing" @click="handleSyncStudents">同步学生信息</el-button>
+          <el-button type="danger" :icon="Delete" :loading="batchDeleting" :disabled="!selectedRows.length" @click="handleBatchDelete">
+            批量删除{{ selectedRows.length ? `(${selectedRows.length})` : '' }}
+          </el-button>
         </div>
         <el-tag type="info">共 {{ total }} 条记录</el-tag>
       </div>
 
       <el-table
+        ref="tableRef"
         :data="list"
         v-loading="loading"
         border
         stripe
         style="width: 100%; margin-top: 12px"
         @sort-change="handleSortChange"
+        @selection-change="handleSelectionChange"
       >
+        <el-table-column type="selection" width="50" align="center" fixed="left" />
         <el-table-column label="序号" width="70" align="center">
           <template #default="{ $index }">
             {{ (pagination.page - 1) * pagination.pageSize + $index + 1 }}
@@ -275,7 +281,7 @@ import { ElMessage, ElMessageBox } from 'element-plus';
 import { Search, Refresh, Plus, Upload, Download, Edit, Delete, UploadFilled, RefreshRight } from '@element-plus/icons-vue';
 import {
   getScores, getScoreOptions, createScore, updateScore, deleteScore,
-  importScores, downloadScoreTemplate, syncStudents,
+  deleteScoresBatch, importScores, downloadScoreTemplate, syncStudents,
 } from '../api/scores';
 
 const loading = ref(false);
@@ -283,6 +289,13 @@ const list = ref([]);
 const total = ref(0);
 const timeRange = ref(null);
 const options = reactive({ classes: [], statuses: [] });
+// 多选删除
+const tableRef = ref(null);
+const selectedRows = ref([]);
+const batchDeleting = ref(false);
+function handleSelectionChange(rows) {
+  selectedRows.value = rows;
+}
 
 const query = reactive({ name: '', batchNo: '', clazz: '', status: '' });
 const pagination = reactive({ page: 1, pageSize: 25 });
@@ -436,6 +449,27 @@ async function handleDelete(row) {
   await deleteScore(row.id);
   ElMessage.success('删除成功');
   fetchList();
+}
+
+/** 批量删除：多选后一次性删除，二次确认 */
+async function handleBatchDelete() {
+  if (!selectedRows.value.length) return;
+  const ids = selectedRows.value.map((r) => r.id);
+  await ElMessageBox.confirm(
+    `确定删除选中的 ${ids.length} 条成绩记录吗？删除后不可恢复。`,
+    '批量删除确认',
+    { type: 'warning', confirmButtonText: '删除', confirmButtonClass: 'el-button--danger' },
+  ).catch(() => false);
+  batchDeleting.value = true;
+  try {
+    const res = await deleteScoresBatch(ids);
+    ElMessage.success(res.message);
+    selectedRows.value = [];
+    tableRef.value?.clearSelection();
+    fetchList();
+  } finally {
+    batchDeleting.value = false;
+  }
 }
 
 // ---- Excel 导入 ----
