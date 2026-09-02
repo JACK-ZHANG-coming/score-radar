@@ -61,9 +61,9 @@
           v-model:current-page="pagination.page"
           v-model:page-size="pagination.pageSize"
           :total="total"
-          :page-sizes="[10, 20, 50, 100]"
+          :page-sizes="[10, 25, 50, 100, 500]"
           layout="total, sizes, prev, pager, next, jumper"
-          @size-change="fetchList"
+          @size-change="handleSizeChange"
           @current-change="fetchList"
         />
       </div>
@@ -149,7 +149,7 @@ const total = ref(0);
 const options = reactive({ classes: [], grades: [] });
 
 const query = reactive({ keyword: '', clazz: '', grade: '' });
-const pagination = reactive({ page: 1, pageSize: 20 });
+const pagination = reactive({ page: 1, pageSize: 25 });
 
 async function fetchList() {
   loading.value = true;
@@ -178,6 +178,13 @@ function handleReset() {
   query.clazz = '';
   query.grade = '';
   pagination.page = 1;
+  fetchList();
+}
+
+/** 切换每页条数：先把页码钳制到合法范围，避免从大页码切到 500 时先请求到空页 */
+function handleSizeChange(size) {
+  const maxPage = Math.max(1, Math.ceil(total.value / size));
+  if (pagination.page > maxPage) pagination.page = maxPage;
   fetchList();
 }
 

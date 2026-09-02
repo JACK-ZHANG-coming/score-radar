@@ -9,5 +9,6 @@ export const importScores = (formData) =>
   request.post('/scores/import', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
   });
+export const syncStudents = () => request.post('/scores/sync-students');
 export const downloadScoreTemplate = () =>
   request.get('/scores/template', { responseType: 'blob' });

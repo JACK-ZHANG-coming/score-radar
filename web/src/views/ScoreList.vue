@@ -53,6 +53,7 @@
           <el-button type="primary" :icon="Plus" @click="openDialog()">新增成绩</el-button>
           <el-button type="success" :icon="Upload" @click="importVisible = true">Excel 导入</el-button>
           <el-button :icon="Download" @click="handleDownloadTemplate">下载导入模板</el-button>
+          <el-button type="warning" :icon="RefreshRight" :loading="syncing" @click="handleSyncStudents">同步学生信息</el-button>
         </div>
         <el-tag type="info">共 {{ total }} 条记录</el-tag>
       </div>
@@ -103,9 +104,9 @@
           v-model:current-page="pagination.page"
           v-model:page-size="pagination.pageSize"
           :total="total"
-          :page-sizes="[10, 20, 50, 100]"
+          :page-sizes="[10, 25, 50, 100, 500]"
           layout="total, sizes, prev, pager, next, jumper"
-          @size-change="fetchList"
+          @size-change="handleSizeChange"
           @current-change="fetchList"
         />
       </div>
@@ -241,12 +242,12 @@
 </template>
 
 <script setup>
-import { onMounted, reactive, ref } from 'vue';
+import { h, onMounted, reactive, ref } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { Search, Refresh, Plus, Upload, Download, Edit, Delete, UploadFilled } from '@element-plus/icons-vue';
+import { Search, Refresh, Plus, Upload, Download, Edit, Delete, UploadFilled, RefreshRight } from '@element-plus/icons-vue';
 import {
   getScores, getScoreOptions, createScore, updateScore, deleteScore,
-  importScores, downloadScoreTemplate,
+  importScores, downloadScoreTemplate, syncStudents,
 } from '../api/scores';
 
 const loading = ref(false);
@@ -256,7 +257,7 @@ const timeRange = ref(null);
 const options = reactive({ classes: [], statuses: [] });
 
 const query = reactive({ name: '', clazz: '', status: '' });
-const pagination = reactive({ page: 1, pageSize: 20 });
+const pagination = reactive({ page: 1, pageSize: 25 });
 // 排序状态（由表格表头点击触发）
 const sort = reactive({ sortField: '', sortOrder: '' });
 
@@ -292,6 +293,13 @@ function handleReset() {
   sort.sortField = '';
   sort.sortOrder = '';
   pagination.page = 1;
+  fetchList();
+}
+
+/** 切换每页条数：先把页码钳制到合法范围，避免从大页码切到 500 时先请求到空页 */
+function handleSizeChange(size) {
+  const maxPage = Math.max(1, Math.ceil(total.value / size));
+  if (pagination.page > maxPage) pagination.page = maxPage;
   fetchList();
 }
 
@@ -411,6 +419,51 @@ async function handleDownloadTemplate() {
   a.download = '学生成绩记录-导入模板.xlsx';
   a.click();
   URL.revokeObjectURL(url);
+}
+
+// ---- 同步学生信息：以考号为唯一主键，把学生信息管理中的最新姓名/班级同步到成绩记录 ----
+const syncing = ref(false);
+
+async function handleSyncStudents() {
+  const ok = await ElMessageBox.confirm(
+    '将以「考号」为唯一主键，把学生信息管理中的最新姓名、班级同步到学生成绩记录；未匹配到学生信息的成绩记录将保持不变。是否继续？',
+    '同步学生信息',
+    { type: 'info', confirmButtonText: '开始同步', cancelButtonText: '取消' },
+  ).catch(() => false);
+  if (!ok) return;
+  syncing.value = true;
+  try {
+    const res = await syncStudents();
+    const d = res.data;
+    fetchList();
+    if (d.updated > 0) {
+      const td = 'border: 1px solid #ebeef5; padding: 6px 8px; text-align: center;';
+      const th = `${td} background: #f5f7fa; font-weight: 600;`;
+      ElMessageBox.alert(
+        h('div', null, [
+          h('p', { style: 'margin: 0 0 12px; line-height: 1.8;' },
+            `共扫描 ${d.total} 条成绩记录，成功更新 ${d.updated} 条，保持不变 ${d.unchanged} 条（其中 ${d.unmatched} 条未匹配到学生信息）。`),
+          h('p', { style: 'margin: 0 0 8px; font-weight: 600;' }, '变更明细：'),
+          h('div', { style: 'max-height: 320px; overflow: auto;' }, [
+            h('table', { style: 'width: 100%; border-collapse: collapse; font-size: 12px;' }, [
+              h('thead', null, h('tr', null,
+                ['考号', '姓名变化', '班级变化'].map((t) => h('th', { style: th }, t)))),
+              h('tbody', null, d.details.map((r) => h('tr', null, [
+                h('td', { style: td }, r.exam_no),
+                h('td', { style: td }, `${r.old_name} → ${r.new_name}`),
+                h('td', { style: td }, `${r.old_class} → ${r.new_class}`),
+              ]))),
+            ]),
+          ]),
+        ]),
+        { title: '同步完成', confirmButtonText: '知道了' },
+      );
+    } else {
+      ElMessage.success(res.message);
+    }
+  } finally {
+    syncing.value = false;
+  }
 }
 
 async function fetchOptions() {

@@ -11,7 +11,7 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 
 
 /** GET /api/students  分页查询（keyword 模糊匹配考号/姓名，另支持班级/年级精确过滤） */
 router.get('/', authRequired, (req, res) => {
-  const { keyword = '', clazz = '', grade = '', page = 1, pageSize = 20 } = req.query;
+  const { keyword = '', clazz = '', grade = '', pageSize = 25 } = req.query;
   const where = [];
   const params = [];
   if (keyword) {
@@ -28,12 +28,15 @@ router.get('/', authRequired, (req, res) => {
   }
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
   const total = db.prepare(`SELECT COUNT(*) AS c FROM students ${whereSql}`).get(...params).c;
-  const size = Math.min(Math.max(Number(pageSize) || 20, 1), 200);
-  const offset = (Math.max(Number(page) || 1, 1) - 1) * size;
+  const size = Math.min(Math.max(Number(pageSize) || 25, 1), 500);
+  // 页码防御：切换到更大每页条数时，越界页码自动收敛到最后一页
+  const totalPages = Math.max(1, Math.ceil(total / size));
+  const page = Math.min(Math.max(Number(req.query.page) || 1, 1), totalPages);
+  const offset = (page - 1) * size;
   const list = db.prepare(
     `SELECT * FROM students ${whereSql} ORDER BY id ASC LIMIT ? OFFSET ?`,
   ).all(...params, size, offset);
-  res.json({ code: 0, data: { list, total, page: Number(page) || 1, pageSize: size } });
+  res.json({ code: 0, data: { list, total, page, pageSize: size, totalPages } });
 });
 
 /** GET /api/students/options  班级/年级下拉选项 */

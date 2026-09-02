@@ -61,12 +61,14 @@ router.get('/', authRequired, (req, res) => {
   }
 
   const total = db.prepare(`SELECT COUNT(*) AS c FROM scores ${whereSql}`).get(...params).c;
-  const size = Math.min(Math.max(Number(req.query.pageSize) || 20, 1), 200);
-  const page = Math.max(Number(req.query.page) || 1, 1);
+  const size = Math.min(Math.max(Number(req.query.pageSize) || 25, 1), 500);
+  // 页码防御：切换到更大每页条数时，越界页码自动收敛到最后一页
+  const totalPages = Math.max(1, Math.ceil(total / size));
+  const page = Math.min(Math.max(Number(req.query.page) || 1, 1), totalPages);
   const list = db.prepare(
     `SELECT * FROM scores ${whereSql} ${orderSql} LIMIT ? OFFSET ?`,
   ).all(...params, size, (page - 1) * size);
-  res.json({ code: 0, data: { list, total, page, pageSize: size } });
+  res.json({ code: 0, data: { list, total, page, pageSize: size, totalPages } });
 });
 
 /** GET /api/scores/options  班级/考试状态选项 */
@@ -215,6 +217,54 @@ router.post('/import', authRequired, upload.single('file'), (req, res) => {
     code: 0,
     message: `导入完成：新增 ${result.inserted} 条，更新 ${result.updated} 条${result.errors.length ? `，跳过 ${result.errors.length} 条` : ''}`,
     data: result,
+  });
+});
+
+/** POST /api/scores/sync-students
+ *  以考号为唯一主键，将学生信息管理模块中的最新姓名/班级同步到成绩记录：
+ *  - 考号匹配且姓名或班级有变化 → 更新成绩记录的姓名、班级
+ *  - 考号未匹配到学生 → 保持原数据不变
+ */
+router.post('/sync-students', authRequired, (req, res) => {
+  const scores = db.prepare('SELECT id, exam_no, name, class FROM scores').all();
+  const getStudent = db.prepare('SELECT name, class FROM students WHERE exam_no = ?');
+  const updateScore = db.prepare(
+    "UPDATE scores SET name = ?, class = ?, updated_at = datetime('now','localtime') WHERE id = ?",
+  );
+
+  let updated = 0;
+  let unmatched = 0;
+  const details = [];
+
+  const sync = db.transaction((list) => {
+    list.forEach((s) => {
+      const stu = getStudent.get(s.exam_no);
+      if (!stu) {
+        unmatched += 1;
+        return;
+      }
+      if (stu.name !== s.name || stu.class !== s.class) {
+        updateScore.run(stu.name, stu.class, s.id);
+        updated += 1;
+        if (details.length < 100) {
+          details.push({
+            exam_no: s.exam_no,
+            old_name: s.name,
+            new_name: stu.name,
+            old_class: s.class,
+            new_class: stu.class,
+          });
+        }
+      }
+    });
+  });
+  sync(scores);
+
+  const unchanged = scores.length - updated;
+  res.json({
+    code: 0,
+    message: `同步完成：共扫描 ${scores.length} 条成绩记录，更新 ${updated} 条，保持不变 ${unchanged} 条（其中 ${unmatched} 条未匹配到学生信息）`,
+    data: { total: scores.length, updated, unchanged, unmatched, details },
   });
 });
 
