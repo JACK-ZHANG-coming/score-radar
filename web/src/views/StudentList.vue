@@ -36,6 +36,7 @@
           <el-button type="primary" :icon="Plus" @click="openDialog()">新增学生</el-button>
           <el-button type="success" :icon="Upload" @click="importVisible = true">Excel 导入</el-button>
           <el-button :icon="Download" @click="handleDownloadTemplate">下载导入模板</el-button>
+          <el-button type="danger" :icon="Warning" :loading="clearing" @click="handleClearAll">一键清除所有学生信息</el-button>
         </div>
         <el-tag type="info">共 {{ total }} 条记录</el-tag>
       </div>
@@ -137,10 +138,10 @@
 <script setup>
 import { onMounted, reactive, ref } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { Search, Refresh, Plus, Upload, Download, Edit, Delete, UploadFilled } from '@element-plus/icons-vue';
+import { Search, Refresh, Plus, Upload, Download, Edit, Delete, UploadFilled, Warning } from '@element-plus/icons-vue';
 import {
   getStudents, getStudentOptions, createStudent, updateStudent, deleteStudent,
-  importStudents, downloadStudentTemplate,
+  importStudents, downloadStudentTemplate, clearStudents,
 } from '../api/students';
 
 const loading = ref(false);
@@ -237,6 +238,33 @@ async function handleDelete(row) {
   ElMessage.success('删除成功');
   fetchList();
   fetchOptions();
+}
+
+// ---- 一键清除所有学生 ----
+const clearing = ref(false);
+
+async function handleClearAll() {
+  try {
+    await ElMessageBox.confirm(
+      `此操作将清空当前所有学生信息（共 ${total.value} 条），清空后不可恢复，是否继续？`,
+      '一键清除确认',
+      { type: 'warning', confirmButtonText: '确认清空', cancelButtonText: '取消' },
+    );
+  } catch {
+    return; // 用户取消
+  }
+  clearing.value = true;
+  try {
+    const res = await clearStudents();
+    ElMessage.success(res.message || '已清空所有学生信息');
+    pagination.page = 1;
+    fetchList();
+    fetchOptions();
+  } catch {
+    // 错误提示已由响应拦截器统一弹出，这里仅结束 loading
+  } finally {
+    clearing.value = false;
+  }
 }
 
 // ---- Excel 导入 ----

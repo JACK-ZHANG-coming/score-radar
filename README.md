@@ -97,6 +97,7 @@ score-radar/
 | POST | /api/students | 新增（考号唯一） |
 | PUT | /api/students/:id | 修改 |
 | DELETE | /api/students/:id | 删除 |
+| DELETE | /api/students/clear | 一键清空所有学生信息（事务执行，并重置自增主键；返回清空条数） |
 | POST | /api/students/import | Excel 批量导入（multipart，字段：考号、姓名、班级、年级、学校） |
 
 ### 成绩

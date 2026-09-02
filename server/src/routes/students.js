@@ -92,6 +92,16 @@ router.put('/:id', authRequired, (req, res) => {
   res.json({ code: 0, message: '修改成功', data: db.prepare('SELECT * FROM students WHERE id = ?').get(id) });
 });
 
+/** DELETE /api/students/clear  一键清空所有学生（事务执行，并重置自增主键） */
+router.delete('/clear', authRequired, (req, res) => {
+  const deleted = db.transaction(() => {
+    const info = db.prepare('DELETE FROM students').run();
+    db.prepare("DELETE FROM sqlite_sequence WHERE name = 'students'").run();
+    return info.changes;
+  })();
+  res.json({ code: 0, message: `已清空 ${deleted} 条学生信息`, data: { deleted } });
+});
+
 /** DELETE /api/students/:id  删除 */
 router.delete('/:id', authRequired, (req, res) => {
   const id = Number(req.params.id);
