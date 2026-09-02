@@ -28,7 +28,11 @@ request.interceptors.response.use(
           router.push('/login');
         }
       } else {
-        ElMessage.error(resp.data?.message || `请求失败（${resp.status}）`);
+        // 重复冲突（试卷批号+姓名）由调用方弹确认框处理，不在此弹错误提示
+        const isDuplicate = resp.status === 409 && resp.data?.data?.duplicate;
+        if (!isDuplicate) {
+          ElMessage.error(resp.data?.message || `请求失败（${resp.status}）`);
+        }
       }
     } else {
       ElMessage.error('网络异常，请检查服务是否启动');

@@ -12,6 +12,15 @@
             @keyup.enter="handleSearch"
           />
         </el-form-item>
+        <el-form-item label="试卷批号">
+          <el-input
+            v-model="query.batchNo"
+            placeholder="支持模糊搜索"
+            clearable
+            style="width: 180px"
+            @keyup.enter="handleSearch"
+          />
+        </el-form-item>
         <el-form-item label="班级">
           <el-select
             v-model="query.clazz"
@@ -66,9 +75,14 @@
         style="width: 100%; margin-top: 12px"
         @sort-change="handleSortChange"
       >
-        <el-table-column prop="serial_no" label="序号" width="70" align="center" sortable="custom" />
+        <el-table-column label="序号" width="70" align="center">
+          <template #default="{ $index }">
+            {{ (pagination.page - 1) * pagination.pageSize + $index + 1 }}
+          </template>
+        </el-table-column>
         <el-table-column prop="exam_no" label="考号" width="110" align="center" sortable="custom" />
         <el-table-column prop="name" label="姓名" min-width="90" sortable="custom" />
+        <el-table-column prop="batch_no" label="试卷批号" min-width="130" sortable="custom" />
         <el-table-column prop="school" label="学校" width="90" align="center" />
         <el-table-column prop="class" label="班级" width="90" align="center" sortable="custom" />
         <el-table-column prop="status" label="考试状态" width="95" align="center">
@@ -134,6 +148,11 @@
           <el-col :span="12">
             <el-form-item label="姓名" prop="name">
               <el-input v-model="form.name" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="试卷批号" prop="batch_no">
+              <el-input v-model="form.batch_no" placeholder="如 2026春模拟一" />
             </el-form-item>
           </el-col>
           <el-col :span="12">
@@ -213,6 +232,15 @@
         title="导入字段须与模板一致：序号、考号、姓名、学校、班级、考试状态、交卷时间、选择题、电子表格、Access、Python、综合题、总成绩"
         style="margin-bottom: 16px"
       />
+      <el-form label-width="90px" style="margin-bottom: 14px">
+        <el-form-item label="试卷批号" prop="importBatchNo">
+          <el-input
+            v-model="importBatchNo"
+            placeholder="默认取文件名，可手动修改为统一批号"
+            clearable
+          />
+        </el-form-item>
+      </el-form>
       <el-upload
         ref="uploadRef"
         drag
@@ -227,7 +255,7 @@
         <div>将 Excel 文件拖到此处，或点击选择</div>
         <template #tip>
           <div style="color: #909399; font-size: 12px">
-            同考号记录将执行更新，首次出现的考号执行新增
+            同一「试卷批号 + 姓名」视为重复：确认后覆盖，否则新增
           </div>
         </template>
       </el-upload>
@@ -256,7 +284,7 @@ const total = ref(0);
 const timeRange = ref(null);
 const options = reactive({ classes: [], statuses: [] });
 
-const query = reactive({ name: '', clazz: '', status: '' });
+const query = reactive({ name: '', batchNo: '', clazz: '', status: '' });
 const pagination = reactive({ page: 1, pageSize: 25 });
 // 排序状态（由表格表头点击触发）
 const sort = reactive({ sortField: '', sortOrder: '' });
@@ -287,6 +315,7 @@ function handleSearch() {
 
 function handleReset() {
   query.name = '';
+  query.batchNo = '';
   query.clazz = '';
   query.status = '';
   timeRange.value = null;
@@ -305,9 +334,9 @@ function handleSizeChange(size) {
 
 // ---- 远程排序：点击表头触发 ----
 const SORT_FIELDS = {
-  serial_no: 'serialNo',
   exam_no: 'examNo',
   name: 'name',
+  batch_no: 'batchNo',
   class: 'class',
   submit_time: 'submitTime',
   choice: 'choice',
@@ -337,7 +366,7 @@ const editingId = ref(null);
 const formRef = ref(null);
 
 const emptyForm = () => ({
-  serial_no: 1, exam_no: '', name: '', school: 'hxzx', class: '', status: '已交卷',
+  serial_no: 1, exam_no: '', name: '', batch_no: '', school: 'hxzx', class: '', status: '已交卷',
   submit_time: '', choice: 0, spreadsheet: 0, access: 0, python: 0, composite: 0, total: 0,
 });
 const form = reactive(emptyForm());
@@ -359,14 +388,40 @@ async function handleSave() {
   saving.value = true;
   try {
     if (editingId.value) {
-      await updateScore(editingId.value, form);
-      ElMessage.success('修改成功');
+      const res = await updateScore(editingId.value, form);
+      ElMessage.success(res.message || '修改成功');
     } else {
-      await createScore(form);
-      ElMessage.success('新增成功');
+      const res = await createScore(form);
+      ElMessage.success(res.message || '新增成功');
     }
     dialogVisible.value = false;
     fetchList();
+  } catch (err) {
+    const d = err.response?.data;
+    if (err.response?.status === 409 && d?.data?.duplicate) {
+      const ok = await ElMessageBox.confirm(
+        `试卷批号「${form.batch_no || '(空)'}」下已存在同名记录（姓名：${form.name}）。是否用当前信息覆盖该记录？`,
+        '重复记录确认',
+        { type: 'warning', confirmButtonText: '覆盖保存', cancelButtonText: '取消' },
+      ).catch(() => false);
+      if (ok) {
+        try {
+          if (editingId.value) {
+            const res2 = await updateScore(editingId.value, { ...form, overwrite: true });
+            ElMessage.success(res2.message || '已覆盖保存');
+          } else {
+            const res2 = await createScore({ ...form, overwrite: true });
+            ElMessage.success(res2.message || '已覆盖保存');
+          }
+          dialogVisible.value = false;
+          fetchList();
+        } finally {
+          saving.value = false;
+        }
+      }
+      return;
+    }
+    // 其它错误已由拦截器提示
   } finally {
     saving.value = false;
   }
@@ -387,10 +442,13 @@ async function handleDelete(row) {
 const importVisible = ref(false);
 const importing = ref(false);
 const importFile = ref(null);
+const importBatchNo = ref('');
 const uploadRef = ref(null);
 
 function handleFileChange(file) {
   importFile.value = file.raw || null;
+  // 试卷批号默认取文件名（去扩展名），可手动修改
+  importBatchNo.value = (file.name || '').replace(/\.[^.]+$/, '');
 }
 
 async function handleImport() {
@@ -399,16 +457,42 @@ async function handleImport() {
   try {
     const fd = new FormData();
     fd.append('file', importFile.value);
+    fd.append('batchNo', importBatchNo.value || '');
     const res = await importScores(fd);
     ElMessage.success(res.message);
-    importVisible.value = false;
-    importFile.value = null;
-    uploadRef.value?.clearFiles();
-    fetchList();
-    fetchOptions();
+    finishImport();
+  } catch (err) {
+    const d = err.response?.data;
+    if (err.response?.status === 409 && d?.data?.duplicate) {
+      const n = d.data.conflictCount || 0;
+      const ok = await ElMessageBox.confirm(
+        `导入数据中发现 ${n} 条与现有「试卷批号+姓名」重复的记录，是否用新数据覆盖这些记录？`,
+        '重复记录确认',
+        { type: 'warning', confirmButtonText: '覆盖导入', cancelButtonText: '取消' },
+      ).catch(() => false);
+      if (ok) {
+        const fd2 = new FormData();
+        fd2.append('file', importFile.value);
+        fd2.append('batchNo', importBatchNo.value || '');
+        fd2.append('overwrite', 'true');
+        const res2 = await importScores(fd2);
+        ElMessage.success(res2.message);
+        finishImport();
+      }
+    }
+    // 其余错误已由拦截器提示
   } finally {
     importing.value = false;
   }
+}
+
+function finishImport() {
+  importVisible.value = false;
+  importFile.value = null;
+  importBatchNo.value = '';
+  uploadRef.value?.clearFiles();
+  fetchList();
+  fetchOptions();
 }
 
 async function handleDownloadTemplate() {

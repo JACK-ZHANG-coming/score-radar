@@ -55,4 +55,15 @@ CREATE INDEX IF NOT EXISTS idx_scores_class ON scores(class);
 CREATE INDEX IF NOT EXISTS idx_scores_submit_time ON scores(submit_time);
 `);
 
+// 已存在的 scores 表补充 batch_no（试卷批号）字段：表建好后通过 ALTER 追加，避免重建
+const hasBatchNo = db.prepare(
+  "SELECT COUNT(*) AS c FROM pragma_table_info('scores') WHERE name = 'batch_no'",
+).get().c;
+if (!hasBatchNo) {
+  db.exec("ALTER TABLE scores ADD COLUMN batch_no TEXT NOT NULL DEFAULT ''");
+  console.log('[db] scores 表已新增 batch_no（试卷批号）字段');
+}
+// 试卷批号 + 姓名 唯一性辅助索引（列已确保存在后再创建）
+db.exec('CREATE INDEX IF NOT EXISTS idx_scores_batch_name ON scores(batch_no, name)');
+
 module.exports = db;
