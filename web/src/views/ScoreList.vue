@@ -13,13 +13,16 @@
           />
         </el-form-item>
         <el-form-item label="试卷批号">
-          <el-input
+          <el-select
             v-model="query.batchNo"
-            placeholder="支持模糊搜索"
+            placeholder="全部批号"
             clearable
-            style="width: 180px"
-            @keyup.enter="handleSearch"
-          />
+            filterable
+            style="width: 200px"
+            :no-data-text="query.clazz ? '该班级下暂无试卷批号' : '暂无试卷批号'"
+          >
+            <el-option v-for="b in batchNos" :key="b" :label="b" :value="b" />
+          </el-select>
         </el-form-item>
         <el-form-item label="班级">
           <el-select
@@ -360,12 +363,13 @@
 </template>
 
 <script setup>
-import { computed, h, onMounted, reactive, ref } from 'vue';
+import { computed, h, onMounted, reactive, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { Search, Refresh, Plus, Upload, Download, Edit, Delete, UploadFilled, RefreshRight, Setting, Top, Bottom } from '@element-plus/icons-vue';
 import {
   getScores, getScoreOptions, createScore, updateScore, deleteScore,
   deleteScoresBatch, importScores, downloadScoreTemplate, syncStudents,
+  getScoreBatchNos,
 } from '../api/scores';
 
 const loading = ref(false);
@@ -373,6 +377,8 @@ const list = ref([]);
 const total = ref(0);
 const timeRange = ref(null);
 const options = reactive({ classes: [], statuses: [] });
+// 试卷批号下拉选项（跟随班级级联）
+const batchNos = ref([]);
 // 多选删除
 const tableRef = ref(null);
 const selectedRows = ref([]);
@@ -496,6 +502,7 @@ function handleReset() {
   sort.sortField = '';
   sort.sortOrder = '';
   pagination.page = 1;
+  fetchBatchNos();
   fetchList();
 }
 
@@ -753,9 +760,27 @@ async function fetchOptions() {
   options.statuses = res.data.statuses;
 }
 
+/** 拉取试卷批号下拉选项：已选班级时只取该班级的批号，否则取全部 */
+async function fetchBatchNos() {
+  try {
+    const res = await getScoreBatchNos({ class: query.clazz || '' });
+    batchNos.value = res.data.batchNos || [];
+    // 级联清理：当前选中的批号不在新列表里时清空，避免脏筛选
+    if (query.batchNo && !batchNos.value.includes(query.batchNo)) {
+      query.batchNo = '';
+    }
+  } catch {
+    batchNos.value = [];
+  }
+}
+
+// 班级变化时实时级联刷新试卷批号选项
+watch(() => query.clazz, () => fetchBatchNos());
+
 onMounted(() => {
   fetchList();
   fetchOptions();
+  fetchBatchNos();
 });
 </script>
 

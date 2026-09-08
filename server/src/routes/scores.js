@@ -85,6 +85,22 @@ router.get('/options', authRequired, (req, res) => {
   res.json({ code: 0, data: { classes: classes.map((r) => r.class), statuses: statuses.map((r) => r.status) } });
 });
 
+/** GET /api/scores/batch-nos  试卷批号下拉选项
+ *  query: class(可选) —— 传班级时只返回该班级关联的批号；不传返回全部
+ */
+router.get('/batch-nos', authRequired, (req, res) => {
+  const clazz = toStr(req.query.class);
+  let rows;
+  if (clazz) {
+    rows = db.prepare(
+      "SELECT DISTINCT batch_no FROM scores WHERE batch_no != '' AND class = ? ORDER BY batch_no",
+    ).all(clazz);
+  } else {
+    rows = db.prepare("SELECT DISTINCT batch_no FROM scores WHERE batch_no != '' ORDER BY batch_no").all();
+  }
+  res.json({ code: 0, data: { batchNos: rows.map((r) => r.batch_no) } });
+});
+
 /** GET /api/scores/template  下载导入模板 */
 router.get('/template', authRequired, (req, res) => {
   const buf = buildTemplate(
