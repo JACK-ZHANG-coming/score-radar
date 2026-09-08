@@ -110,6 +110,21 @@
                 {{ row.total }}
               </span>
             </template>
+            <template v-else-if="col.key === 'correction_score'">
+              <span v-if="row.correction_score === null || row.correction_score === undefined || row.correction_score === ''">—</span>
+              <span v-else>{{ row.correction_score }}</span>
+            </template>
+            <template v-else-if="col.key === 'remark'">
+              <el-tooltip
+                v-if="row.remark"
+                :content="row.remark"
+                placement="top"
+                :show-after="300"
+              >
+                <span class="remark-cell">{{ row.remark }}</span>
+              </el-tooltip>
+              <span v-else>—</span>
+            </template>
             <template v-else>{{ row[col.key] }}</template>
           </template>
         </el-table-column>
@@ -221,6 +236,30 @@
           <el-col :span="8">
             <el-form-item label="总成绩" prop="total">
               <el-input-number v-model="form.total" :min="0" :max="600" controls-position="right" style="width: 100%" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="8">
+            <el-form-item label="二次订正分" prop="correction_score">
+              <el-input-number
+                v-model="form.correction_score"
+                :min="0"
+                :max="600"
+                controls-position="right"
+                placeholder="未订正"
+                style="width: 100%"
+              />
+            </el-form-item>
+          </el-col>
+          <el-col :span="24">
+            <el-form-item label="备注" prop="remark">
+              <el-input
+                v-model="form.remark"
+                type="textarea"
+                :rows="2"
+                maxlength="500"
+                show-word-limit
+                placeholder="教师反馈或补充说明（选填）"
+              />
             </el-form-item>
           </el-col>
         </el-row>
@@ -364,6 +403,8 @@ const COLUMN_DEFS = [
   { key: 'python', label: 'Python', width: 90, align: 'center', sortable: true },
   { key: 'composite', label: '综合题', width: 90, align: 'center', sortable: true },
   { key: 'total', label: '总成绩', width: 90, align: 'center', sortable: true },
+  { key: 'correction_score', label: '二次订正分', width: 100, align: 'center', sortable: true },
+  { key: 'remark', label: '备注', minWidth: 160, align: 'left', sortable: false },
 ];
 
 function getColDef(key) {
@@ -478,6 +519,7 @@ const SORT_FIELDS = {
   python: 'python',
   composite: 'composite',
   total: 'total',
+  correction_score: 'correctionScore',
 };
 
 function handleSortChange({ prop, order }) {
@@ -501,6 +543,7 @@ const formRef = ref(null);
 const emptyForm = () => ({
   serial_no: 1, exam_no: '', name: '', batch_no: '', school: 'hxzx', class: '', status: '已交卷',
   submit_time: '', choice: 0, spreadsheet: 0, access: 0, python: 0, composite: 0, total: 0,
+  correction_score: null, remark: '',
 });
 const form = reactive(emptyForm());
 
@@ -753,5 +796,20 @@ onMounted(() => {
 .col-locked-tip {
   font-size: 12px;
   color: var(--el-text-color-secondary);
+}
+/* 备注：单行截断，悬浮提示展示完整内容 */
+.remark-cell {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+/* 移动端小屏：备注列适度收窄，确保横向滚动更平顺 */
+@media (max-width: 768px) {
+  :deep(.el-table .remark-cell) {
+    max-width: 120px;
+  }
 }
 </style>

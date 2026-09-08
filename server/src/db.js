@@ -66,4 +66,19 @@ if (!hasBatchNo) {
 // 试卷批号 + 姓名 唯一性辅助索引（列已确保存在后再创建）
 db.exec('CREATE INDEX IF NOT EXISTS idx_scores_batch_name ON scores(batch_no, name)');
 
+// scores 表补充 remark（备注）与 correction_score（二次订正分）字段
+// remark：教师反馈/补充说明，空字符串表示无备注
+// correction_score：二次订正后成绩，REAL 可空，NULL 表示未订正
+const scoreCols = db.prepare(
+  "SELECT COUNT(*) AS c FROM pragma_table_info('scores') WHERE name = ?",
+);
+if (!scoreCols.get('remark').c) {
+  db.exec("ALTER TABLE scores ADD COLUMN remark TEXT NOT NULL DEFAULT ''");
+  console.log('[db] scores 表已新增 remark（备注）字段');
+}
+if (!scoreCols.get('correction_score').c) {
+  db.exec('ALTER TABLE scores ADD COLUMN correction_score REAL');
+  console.log('[db] scores 表已新增 correction_score（二次订正分）字段');
+}
+
 module.exports = db;

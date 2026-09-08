@@ -24,6 +24,7 @@ const SORTABLE = {
   composite: 'composite',
   total: 'total',
   batchNo: 'batch_no',
+  correctionScore: 'correction_score',
 };
 
 /** GET /api/scores  多条件搜索 + 排序 + 分页
@@ -112,6 +113,11 @@ function rowToScore(body) {
     python: toNum(body.python),
     composite: toNum(body.composite),
     total: toNum(body.total),
+    // correction_score：null/''/undefined → NULL（未订正），可转数字 → 数值
+    correction_score:
+      body.correction_score === null || body.correction_score === '' || body.correction_score === undefined
+        ? null : Number(body.correction_score),
+    remark: toStr(body.remark),
   };
 }
 
@@ -135,15 +141,16 @@ router.post('/', authRequired, (req, res) => {
   }
 
   const COLS = `serial_no, exam_no, name, batch_no, school, class, status, submit_time,
-      choice, spreadsheet, access, python, composite, total`;
+      choice, spreadsheet, access, python, composite, total, correction_score, remark`;
   const VALS = `@serial_no, @exam_no, @name, @batch_no, @school, @class, @status, @submit_time,
-      @choice, @spreadsheet, @access, @python, @composite, @total`;
+      @choice, @spreadsheet, @access, @python, @composite, @total, @correction_score, @remark`;
 
   if (dup && req.body.overwrite) {
     db.prepare(`
       UPDATE scores SET serial_no=@serial_no, exam_no=@exam_no, name=@name, batch_no=@batch_no,
         school=@school, class=@class, status=@status, submit_time=@submit_time, choice=@choice,
         spreadsheet=@spreadsheet, access=@access, python=@python, composite=@composite, total=@total,
+        correction_score=@correction_score, remark=@remark,
         updated_at=datetime('now','localtime')
       WHERE id=@id
     `).run({ ...s, id: dup.id });
@@ -182,6 +189,7 @@ router.put('/:id', authRequired, (req, res) => {
         UPDATE scores SET serial_no=@serial_no, exam_no=@exam_no, name=@name, batch_no=@batch_no,
           school=@school, class=@class, status=@status, submit_time=@submit_time, choice=@choice,
           spreadsheet=@spreadsheet, access=@access, python=@python, composite=@composite, total=@total,
+          correction_score=@correction_score, remark=@remark,
           updated_at=datetime('now','localtime')
         WHERE id=@id
       `).run({ ...s, id: dup.id });
@@ -194,6 +202,7 @@ router.put('/:id', authRequired, (req, res) => {
     UPDATE scores SET serial_no=@serial_no, exam_no=@exam_no, name=@name, batch_no=@batch_no,
       school=@school, class=@class, status=@status, submit_time=@submit_time, choice=@choice,
       spreadsheet=@spreadsheet, access=@access, python=@python, composite=@composite, total=@total,
+      correction_score=@correction_score, remark=@remark,
       updated_at=datetime('now','localtime')
     WHERE id=@id
   `).run({ ...s, id });
@@ -268,14 +277,15 @@ router.post('/import', authRequired, upload.single('file'), (req, res) => {
 
   const insert = db.prepare(`
     INSERT INTO scores (serial_no, exam_no, name, batch_no, school, class, status, submit_time,
-      choice, spreadsheet, access, python, composite, total)
+      choice, spreadsheet, access, python, composite, total, correction_score, remark)
     VALUES (@serial_no, @exam_no, @name, @batch_no, @school, @class, @status, @submit_time,
-      @choice, @spreadsheet, @access, @python, @composite, @total)
+      @choice, @spreadsheet, @access, @python, @composite, @total, @correction_score, @remark)
   `);
   const update = db.prepare(`
     UPDATE scores SET serial_no=@serial_no, exam_no=@exam_no, name=@name, batch_no=@batch_no, school=@school,
       class=@class, status=@status, submit_time=@submit_time, choice=@choice, spreadsheet=@spreadsheet,
       access=@access, python=@python, composite=@composite, total=@total,
+      correction_score=@correction_score, remark=@remark,
       updated_at=datetime('now','localtime')
     WHERE id=@id
   `);
@@ -292,6 +302,7 @@ router.post('/import', authRequired, upload.single('file'), (req, res) => {
         errors.push(`第 ${line} 行：考号或姓名为空，已跳过`);
         return;
       }
+      const exists = db.prepare('SELECT id FROM scores WHERE batch_no = ? AND name = ?').get(batchNo, name);
       const s = {
         serial_no: toNum(row['序号']) || null,
         exam_no: examNo,
@@ -307,8 +318,10 @@ router.post('/import', authRequired, upload.single('file'), (req, res) => {
         python: toNum(row['Python']),
         composite: toNum(row['综合题']),
         total: toNum(row['总成绩']),
+        // 模板不含备注/二次订正分：覆盖已有行时保留库中原值，新行用默认（NULL / ''）
+        correction_score: exists ? exists.correction_score : null,
+        remark: exists ? exists.remark : '',
       };
-      const exists = db.prepare('SELECT id FROM scores WHERE batch_no = ? AND name = ?').get(batchNo, name);
       if (exists) {
         update.run({ ...s, id: exists.id });
         updated += 1;
