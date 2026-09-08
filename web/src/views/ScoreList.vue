@@ -67,7 +67,10 @@
             批量删除{{ selectedRows.length ? `(${selectedRows.length})` : '' }}
           </el-button>
         </div>
-        <el-tag type="info">共 {{ total }} 条记录</el-tag>
+        <div class="toolbar-actions">
+          <el-button :icon="Setting" @click="openColumnDialog">列设置</el-button>
+          <el-tag type="info">共 {{ total }} 条记录</el-tag>
+        </div>
       </div>
 
       <el-table
@@ -86,29 +89,28 @@
             {{ (pagination.page - 1) * pagination.pageSize + $index + 1 }}
           </template>
         </el-table-column>
-        <el-table-column prop="exam_no" label="考号" width="110" align="center" sortable="custom" />
-        <el-table-column prop="name" label="姓名" min-width="90" sortable="custom" />
-        <el-table-column prop="batch_no" label="试卷批号" min-width="130" sortable="custom" />
-        <el-table-column prop="school" label="学校" width="90" align="center" />
-        <el-table-column prop="class" label="班级" width="90" align="center" sortable="custom" />
-        <el-table-column prop="status" label="考试状态" width="95" align="center">
+        <el-table-column
+          v-for="col in visibleColumns"
+          :key="col.key"
+          :prop="col.key"
+          :label="getColDef(col.key).label"
+          :width="getColDef(col.key).width"
+          :min-width="getColDef(col.key).minWidth"
+          :align="getColDef(col.key).align || 'center'"
+          :sortable="getColDef(col.key).sortable ? 'custom' : false"
+        >
           <template #default="{ row }">
-            <el-tag :type="row.status === '已交卷' ? 'success' : 'danger'" size="small">
-              {{ row.status }}
-            </el-tag>
-          </template>
-        </el-table-column>
-        <el-table-column prop="submit_time" label="交卷时间" width="160" align="center" sortable="custom" />
-        <el-table-column prop="choice" label="选择题" width="90" align="center" sortable="custom" />
-        <el-table-column prop="spreadsheet" label="电子表格" width="95" align="center" sortable="custom" />
-        <el-table-column prop="access" label="Access" width="90" align="center" sortable="custom" />
-        <el-table-column prop="python" label="Python" width="90" align="center" sortable="custom" />
-        <el-table-column prop="composite" label="综合题" width="90" align="center" sortable="custom" />
-        <el-table-column prop="total" label="总成绩" width="90" align="center" sortable="custom">
-          <template #default="{ row }">
-            <span :style="{ fontWeight: 600, color: (row.total || 0) >= 60 ? '#67c23a' : '#f56c6c' }">
-              {{ row.total }}
-            </span>
+            <template v-if="col.key === 'status'">
+              <el-tag :type="row.status === '已交卷' ? 'success' : 'danger'" size="small">
+                {{ row.status }}
+              </el-tag>
+            </template>
+            <template v-else-if="col.key === 'total'">
+              <span :style="{ fontWeight: 600, color: (row.total || 0) >= 60 ? '#67c23a' : '#f56c6c' }">
+                {{ row.total }}
+              </span>
+            </template>
+            <template v-else>{{ row[col.key] }}</template>
           </template>
         </el-table-column>
         <el-table-column label="操作" width="140" align="center" fixed="right">
@@ -272,13 +274,56 @@
         </el-button>
       </template>
     </el-dialog>
+
+    <!-- 列设置弹窗 -->
+    <el-dialog v-model="columnDialogVisible" title="列设置" width="420px" destroy-on-close>
+      <el-alert
+        type="info"
+        :closable="false"
+        show-icon
+        title="勾选控制显示/隐藏，上移/下移调整排列顺序；选择/序号/操作列固定显示"
+        style="margin-bottom: 12px"
+      />
+      <div class="col-manage">
+        <div v-for="(col, idx) in draftColumns" :key="col.key" class="col-item">
+          <el-checkbox v-model="col.visible">{{ getColDef(col.key).label }}</el-checkbox>
+          <div class="col-move">
+            <el-button :icon="Top" size="small" circle :disabled="idx === 0" title="上移" @click="moveColumn(idx, -1)" />
+            <el-button
+              :icon="Bottom"
+              size="small"
+              circle
+              :disabled="idx === draftColumns.length - 1"
+              title="下移"
+              @click="moveColumn(idx, 1)"
+            />
+          </div>
+        </div>
+        <div class="col-item col-locked">
+          <el-checkbox :model-value="true" disabled>选择</el-checkbox>
+          <span class="col-locked-tip">固定显示</span>
+        </div>
+        <div class="col-item col-locked">
+          <el-checkbox :model-value="true" disabled>序号</el-checkbox>
+          <span class="col-locked-tip">固定显示</span>
+        </div>
+        <div class="col-item col-locked">
+          <el-checkbox :model-value="true" disabled>操作</el-checkbox>
+          <span class="col-locked-tip">固定显示</span>
+        </div>
+      </div>
+      <template #footer>
+        <el-button @click="columnDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="applyColumnConfig">确定</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
-import { h, onMounted, reactive, ref } from 'vue';
+import { computed, h, onMounted, reactive, ref } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { Search, Refresh, Plus, Upload, Download, Edit, Delete, UploadFilled, RefreshRight } from '@element-plus/icons-vue';
+import { Search, Refresh, Plus, Upload, Download, Edit, Delete, UploadFilled, RefreshRight, Setting, Top, Bottom } from '@element-plus/icons-vue';
 import {
   getScores, getScoreOptions, createScore, updateScore, deleteScore,
   deleteScoresBatch, importScores, downloadScoreTemplate, syncStudents,
@@ -301,6 +346,81 @@ const query = reactive({ name: '', batchNo: '', clazz: '', status: '' });
 const pagination = reactive({ page: 1, pageSize: 25 });
 // 排序状态（由表格表头点击触发）
 const sort = reactive({ sortField: '', sortOrder: '' });
+
+// ---- 列设置：列元数据以代码为准，顺序与可见性持久化到 localStorage ----
+const STORAGE_KEY = 'score-list-columns';
+
+const COLUMN_DEFS = [
+  { key: 'exam_no', label: '考号', width: 110, align: 'center', sortable: true },
+  { key: 'name', label: '姓名', minWidth: 90, align: 'center', sortable: true },
+  { key: 'batch_no', label: '试卷批号', minWidth: 130, align: 'center', sortable: true },
+  { key: 'school', label: '学校', width: 90, align: 'center' },
+  { key: 'class', label: '班级', width: 90, align: 'center', sortable: true },
+  { key: 'status', label: '考试状态', width: 95, align: 'center' },
+  { key: 'submit_time', label: '交卷时间', width: 160, align: 'center', sortable: true },
+  { key: 'choice', label: '选择题', width: 90, align: 'center', sortable: true },
+  { key: 'spreadsheet', label: '电子表格', width: 95, align: 'center', sortable: true },
+  { key: 'access', label: 'Access', width: 90, align: 'center', sortable: true },
+  { key: 'python', label: 'Python', width: 90, align: 'center', sortable: true },
+  { key: 'composite', label: '综合题', width: 90, align: 'center', sortable: true },
+  { key: 'total', label: '总成绩', width: 90, align: 'center', sortable: true },
+];
+
+function getColDef(key) {
+  return COLUMN_DEFS.find((d) => d.key === key) || { key, label: key, align: 'center' };
+}
+
+// 读取本地存储：有则按存储顺序+可见性重建，并兼容代码中新增/移除的列
+function loadColumnConfig() {
+  const defs = COLUMN_DEFS.map((d) => ({ key: d.key, visible: true }));
+  let saved = null;
+  try {
+    saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
+  } catch {
+    saved = null;
+  }
+  if (!Array.isArray(saved)) return defs;
+  const validKeys = new Set(COLUMN_DEFS.map((d) => d.key));
+  const savedValid = saved.filter((s) => validKeys.has(s.key));
+  const savedMap = new Map(savedValid.map((s) => [s.key, !!s.visible]));
+  const savedKeySet = new Set(savedValid.map((s) => s.key));
+  const orderedKeys = [
+    ...savedValid.map((s) => s.key),
+    ...COLUMN_DEFS.map((d) => d.key).filter((k) => !savedKeySet.has(k)),
+  ];
+  return orderedKeys.map((k) => ({ key: k, visible: savedMap.has(k) ? savedMap.get(k) : true }));
+}
+
+const columnConfig = ref(loadColumnConfig());
+const visibleColumns = computed(() => columnConfig.value.filter((c) => c.visible));
+
+const columnDialogVisible = ref(false);
+const draftColumns = ref([]);
+
+function openColumnDialog() {
+  draftColumns.value = columnConfig.value.map((c) => ({ ...c }));
+  columnDialogVisible.value = true;
+}
+
+function moveColumn(idx, dir) {
+  const target = idx + dir;
+  if (target < 0 || target >= draftColumns.value.length) return;
+  const arr = draftColumns.value;
+  const tmp = arr[idx];
+  arr[idx] = arr[target];
+  arr[target] = tmp;
+}
+
+function persistColumnConfig() {
+  const data = columnConfig.value.map((c) => ({ key: c.key, visible: c.visible }));
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+}
+
+function applyColumnConfig() {
+  columnConfig.value = draftColumns.value.map((c) => ({ ...c }));
+  persistColumnConfig();
+  columnDialogVisible.value = false;
+}
 
 // ---- 列表 ----
 async function fetchList() {
@@ -600,5 +720,38 @@ onMounted(() => {
 :deep(.el-form--inline .el-form-item) {
   margin-right: 16px;
   margin-bottom: 8px;
+}
+.toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.col-manage {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 50vh;
+  overflow-y: auto;
+}
+.col-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 6px;
+  background: var(--el-fill-color-blank);
+}
+.col-move {
+  display: flex;
+  gap: 6px;
+}
+.col-locked {
+  background: var(--el-fill-color-light);
+  color: var(--el-text-color-secondary);
+}
+.col-locked-tip {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
 }
 </style>
