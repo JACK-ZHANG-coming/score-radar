@@ -4,6 +4,12 @@
 
 基于用户上传的两份 Excel 模板（学生成绩记录.xlsx、考生名单(1).xlsx）交付完整全栈系统，位于 `/Users/zhangqiang/Documents/GitHub/score-radar/`。
 
+## 2026-09-10 增量：试卷批次管理（增量交付见 deliverables/software-company/paper-batch-delivery-2026-09-10.md）
+
+- 新增「试卷批次管理」页面（/paperBatch，菜单位于学生成绩记录与学生信息管理之间）：分项满分/总满分/合格占比配置 + 合格线自动计算，4 区布局、列设置、排序分页、Excel 导入导出
+- 新增 paper_batches 表 + 8 类接口（/api/paper-batches）；存量批号冷启动幂等回填；成绩联动：批号下拉合并数据源、配置带出、导入/新增/编辑分数校验（超分拦截）、total 着色与合格状态列按批号合格线
+- QA 53/53 通过；两处返工修复（导入空占比兜 60、分页一致性）已终验
+
 ### 系统架构
 
 | 端 | 技术栈 | 端口 |

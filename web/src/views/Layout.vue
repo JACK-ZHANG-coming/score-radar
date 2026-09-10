@@ -79,6 +79,7 @@ const isCollapse = ref(false);
 
 const menus = [
   { path: '/scores', title: '学生成绩记录', icon: 'DataAnalysis' },
+  { path: '/paperBatch', title: '试卷批次管理', icon: 'Files' },
   { path: '/students', title: '学生信息管理', icon: 'User' },
   { path: '/profile', title: '个人中心', icon: 'Setting' },
 ];

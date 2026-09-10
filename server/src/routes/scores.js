@@ -6,6 +6,29 @@ const { authRequired } = require('../middleware/auth');
 const {
   SCORE_HEADERS, buildTemplate, parseSheet, missingHeaders, normalizeTime, toNum, toStr,
 } = require('../utils/excel');
+const { ensurePaperBatch, computedPassLine } = require('../utils/paperBatch');
+
+// 试卷批号配置查询（供下拉合并、分数校验使用）
+const getPbConfig = db.prepare(
+  'SELECT batch_no, batch_name, total_full, pass_ratio, choice_full, spreadsheet_full, access_full, python_full, composite_full FROM paper_batches WHERE batch_no = ?',
+);
+
+/**
+ * 按试卷批号配置校验单条成绩分数合法性（仅「已配置」批号生效，即 total_full > 0）。
+ * 返回错误信息字符串或 null（通过）。未配置（占位行）则跳过校验。
+ */
+function validateScoreByConfig(batchNo, s) {
+  if (!batchNo) return null;
+  const cfg = getPbConfig.get(batchNo);
+  if (!cfg || !(cfg.total_full > 0)) return null;
+  if (s.choice > cfg.choice_full) return '选择题得分超出试卷满分配置';
+  if (s.spreadsheet > cfg.spreadsheet_full) return '电子表格得分超出试卷满分配置';
+  if (s.access > cfg.access_full) return 'Access得分超出试卷满分配置';
+  if (s.python > cfg.python_full) return 'Python得分超出试卷满分配置';
+  if (s.composite > cfg.composite_full) return '综合题得分超出试卷满分配置';
+  if (s.total > cfg.total_full) return '总分超出试卷满分配置';
+  return null;
+}
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
@@ -90,15 +113,34 @@ router.get('/options', authRequired, (req, res) => {
  */
 router.get('/batch-nos', authRequired, (req, res) => {
   const clazz = toStr(req.query.class);
-  let rows;
+  // 1) 来自 scores（按 class 过滤）
+  let scoreRows;
   if (clazz) {
-    rows = db.prepare(
-      "SELECT DISTINCT batch_no FROM scores WHERE batch_no != '' AND class = ? ORDER BY batch_no",
+    scoreRows = db.prepare(
+      "SELECT DISTINCT batch_no FROM scores WHERE batch_no != '' AND class = ?",
     ).all(clazz);
   } else {
-    rows = db.prepare("SELECT DISTINCT batch_no FROM scores WHERE batch_no != '' ORDER BY batch_no").all();
+    scoreRows = db.prepare("SELECT DISTINCT batch_no FROM scores WHERE batch_no != ''").all();
   }
-  res.json({ code: 0, data: { batchNos: rows.map((r) => r.batch_no) } });
+  // 2) 来自 paper_batches（全量，不受 class 过滤）
+  const pbRows = db.prepare("SELECT DISTINCT batch_no FROM paper_batches WHERE batch_no != ''").all();
+  // 3) 合并去重，构造响应项（camelCase，供成绩页下拉/着色/校验共用）
+  const map = new Map();
+  const add = (bn) => {
+    if (!bn || map.has(bn)) return;
+    const cfg = getPbConfig.get(bn);
+    map.set(bn, {
+      batchNo: bn,
+      batchName: cfg ? cfg.batch_name : '',
+      totalFull: cfg ? cfg.total_full : 0,
+      passLine: cfg ? computedPassLine(cfg.total_full, cfg.pass_ratio) : 0,
+      configured: !!(cfg && cfg.total_full > 0),
+    });
+  };
+  scoreRows.forEach((r) => add(r.batch_no));
+  pbRows.forEach((r) => add(r.batch_no));
+  const list = [...map.values()].sort((a, b) => a.batchNo.localeCompare(b.batchNo));
+  res.json({ code: 0, data: { batchNos: list } });
 });
 
 /** GET /api/scores/template  下载导入模板 */
@@ -156,6 +198,10 @@ router.post('/', authRequired, (req, res) => {
     });
   }
 
+  // 按所选试卷批号配置校验分数合法性（仅已配置批号生效，否则跳过）
+  const cfgErr = validateScoreByConfig(s.batch_no, s);
+  if (cfgErr) return res.status(400).json({ code: 400, message: cfgErr });
+
   const COLS = `serial_no, exam_no, name, batch_no, school, class, status, submit_time,
       choice, spreadsheet, access, python, composite, total, correction_score, remark`;
   const VALS = `@serial_no, @exam_no, @name, @batch_no, @school, @class, @status, @submit_time,
@@ -170,12 +216,14 @@ router.post('/', authRequired, (req, res) => {
         updated_at=datetime('now','localtime')
       WHERE id=@id
     `).run({ ...s, id: dup.id });
+    ensurePaperBatch(s.batch_no); // 静默补占位行（幂等）
     return res.json({ code: 0, message: '已覆盖保存', data: db.prepare('SELECT * FROM scores WHERE id = ?').get(dup.id) });
   }
 
   const info = db.prepare(`
     INSERT INTO scores (${COLS}) VALUES (${VALS})
   `).run(s);
+  ensurePaperBatch(s.batch_no); // 静默补占位行（幂等）
   res.json({ code: 0, message: '新增成功', data: db.prepare('SELECT * FROM scores WHERE id = ?').get(info.lastInsertRowid) });
 });
 
@@ -188,6 +236,10 @@ router.put('/:id', authRequired, (req, res) => {
   const old = db.prepare('SELECT * FROM scores WHERE id = ?').get(id);
   if (!old) return res.status(404).json({ code: 404, message: '成绩记录不存在' });
   const s = rowToScore({ ...old, ...req.body });
+
+  // 按所选试卷批号配置校验分数合法性（仅已配置批号生效，否则跳过）
+  const cfgErr = validateScoreByConfig(s.batch_no, s);
+  if (cfgErr) return res.status(400).json({ code: 400, message: cfgErr });
 
   const dup = db.prepare('SELECT id, name FROM scores WHERE batch_no = ? AND name = ? AND id != ?').get(s.batch_no, s.name, id);
   if (dup && !req.body.overwrite) {
@@ -306,6 +358,9 @@ router.post('/import', authRequired, upload.single('file'), (req, res) => {
     WHERE id=@id
   `);
 
+  // 预取该批号配置（同一导入批次统一批号，仅查一次，缓存到事务局部）
+  const batchCfg = getPbConfig.get(batchNo);
+
   const doImport = db.transaction((list) => {
     let inserted = 0;
     let updated = 0;
@@ -338,6 +393,15 @@ router.post('/import', authRequired, upload.single('file'), (req, res) => {
         correction_score: exists ? exists.correction_score : null,
         remark: exists ? exists.remark : '',
       };
+      // 按所选试卷批号配置校验分数合法性（仅已配置批号生效，否则跳过）
+      if (batchCfg && batchCfg.total_full > 0) {
+        if (s.choice > batchCfg.choice_full || s.spreadsheet > batchCfg.spreadsheet_full ||
+            s.access > batchCfg.access_full || s.python > batchCfg.python_full ||
+            s.composite > batchCfg.composite_full || s.total > batchCfg.total_full) {
+          errors.push(`第 ${line} 行分数非法（超出试卷满分配置）`);
+          return;
+        }
+      }
       if (exists) {
         update.run({ ...s, id: exists.id });
         updated += 1;
@@ -345,6 +409,7 @@ router.post('/import', authRequired, upload.single('file'), (req, res) => {
         insert.run(s);
         inserted += 1;
       }
+      ensurePaperBatch(batchNo); // 静默补占位行（事务内幂等）
     });
     return { inserted, updated, errors };
   });

@@ -21,7 +21,12 @@
             style="width: 200px"
             :no-data-text="query.clazz ? '该班级下暂无试卷批号' : '暂无试卷批号'"
           >
-            <el-option v-for="b in batchNos" :key="b" :label="b" :value="b" />
+            <el-option
+              v-for="b in batchNos"
+              :key="b.batchNo"
+              :label="b.batchName ? `${b.batchNo}（${b.batchName}）` : b.batchNo"
+              :value="b.batchNo"
+            />
           </el-select>
         </el-form-item>
         <el-form-item label="班级">
@@ -108,8 +113,14 @@
                 {{ row.status }}
               </el-tag>
             </template>
+            <template v-else-if="col.key === 'pass_status'">
+              <el-tag v-if="!currentBatchConfig.configured" type="info" size="small">—</el-tag>
+              <el-tag v-else :type="row.total >= currentBatchConfig.passLine ? 'success' : 'danger'" size="small">
+                {{ row.total >= currentBatchConfig.passLine ? '合格' : '不合格' }}
+              </el-tag>
+            </template>
             <template v-else-if="col.key === 'total'">
-              <span :style="{ fontWeight: 600, color: (row.total || 0) >= 60 ? '#67c23a' : '#f56c6c' }">
+              <span :style="{ fontWeight: 600, color: (row.total || 0) >= passLineOf(row) ? '#67c23a' : '#f56c6c' }">
                 {{ row.total }}
               </span>
             </template>
@@ -379,6 +390,27 @@ const timeRange = ref(null);
 const options = reactive({ classes: [], statuses: [] });
 // 试卷批号下拉选项（跟随班级级联）
 const batchNos = ref([]);
+// 当前选中批号的配置（用于合格线着色与合格状态判定）；未选中/未配置时回退默认 60
+const currentBatchConfig = reactive({ passLine: 60, totalFull: 0, configured: false });
+
+/** 返回某行成绩应使用的合格线：选中且已配置批号取配置合格线，否则回退 60 */
+function passLineOf(row) {
+  return currentBatchConfig.configured ? currentBatchConfig.passLine : 60;
+}
+
+/** 根据当前选中批号同步配置（供合格状态/着色使用） */
+function syncCurrentBatchConfig() {
+  const found = batchNos.value.find((b) => b.batchNo === query.batchNo);
+  if (found) {
+    currentBatchConfig.passLine = found.passLine;
+    currentBatchConfig.totalFull = found.totalFull;
+    currentBatchConfig.configured = found.configured;
+  } else {
+    currentBatchConfig.passLine = 60;
+    currentBatchConfig.totalFull = 0;
+    currentBatchConfig.configured = false;
+  }
+}
 // 多选删除
 const tableRef = ref(null);
 const selectedRows = ref([]);
@@ -408,6 +440,7 @@ const COLUMN_DEFS = [
   { key: 'access', label: 'Access', width: 90, align: 'center', sortable: true },
   { key: 'python', label: 'Python', width: 90, align: 'center', sortable: true },
   { key: 'composite', label: '综合题', width: 90, align: 'center', sortable: true },
+  { key: 'pass_status', label: '合格状态', width: 100, align: 'center', sortable: false },
   { key: 'total', label: '总成绩', width: 90, align: 'center', sortable: true },
   { key: 'correction_score', label: '二次订正分', width: 100, align: 'center', sortable: true },
   { key: 'remark', label: '备注', minWidth: 160, align: 'left', sortable: false },
@@ -579,6 +612,7 @@ async function handleSave() {
     }
     dialogVisible.value = false;
     fetchList();
+    fetchBatchNos();
   } catch (err) {
     const d = err.response?.data;
     if (err.response?.status === 409 && d?.data?.duplicate) {
@@ -598,6 +632,7 @@ async function handleSave() {
           }
           dialogVisible.value = false;
           fetchList();
+          fetchBatchNos();
         } finally {
           saving.value = false;
         }
@@ -697,6 +732,7 @@ function finishImport() {
   uploadRef.value?.clearFiles();
   fetchList();
   fetchOptions();
+  fetchBatchNos();
 }
 
 async function handleDownloadTemplate() {
@@ -764,11 +800,13 @@ async function fetchOptions() {
 async function fetchBatchNos() {
   try {
     const res = await getScoreBatchNos({ class: query.clazz || '' });
+    // 合并数据源返回对象数组：{ batchNo, batchName, passLine, totalFull, configured }
     batchNos.value = res.data.batchNos || [];
     // 级联清理：当前选中的批号不在新列表里时清空，避免脏筛选
-    if (query.batchNo && !batchNos.value.includes(query.batchNo)) {
+    if (query.batchNo && !batchNos.value.some((b) => b.batchNo === query.batchNo)) {
       query.batchNo = '';
     }
+    syncCurrentBatchConfig();
   } catch {
     batchNos.value = [];
   }
@@ -776,6 +814,8 @@ async function fetchBatchNos() {
 
 // 班级变化时实时级联刷新试卷批号选项
 watch(() => query.clazz, () => fetchBatchNos());
+// 选中批号变化时同步当前配置（合格线/着色/合格状态）
+watch(() => query.batchNo, syncCurrentBatchConfig);
 
 onMounted(() => {
   fetchList();

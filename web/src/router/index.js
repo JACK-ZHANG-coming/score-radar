@@ -20,6 +20,12 @@ const routes = [
         meta: { title: '学生成绩记录', icon: 'DataAnalysis' },
       },
       {
+        path: 'paperBatch',
+        name: 'PaperBatch',
+        component: () => import('../views/PaperBatchList.vue'),
+        meta: { title: '试卷批次管理', icon: 'Files' },
+      },
+      {
         path: 'students',
         name: 'Students',
         component: () => import('../views/StudentList.vue'),

@@ -21,6 +21,12 @@ const SCORE_HEADERS = [
   '选择题', '电子表格', 'Access', 'Python', '综合题', '总成绩',
 ];
 
+/** 试卷批次模板字段（13 列，含只读列「计算得出合格线」「创建时间」，导入时忽略这两列） */
+const PAPER_BATCH_HEADERS = [
+  '序号', '试卷批号', '试卷批次名称', '选择题满分', '电子表格满分', 'Access满分', 'Python满分',
+  '综合题满分', '试卷总满分', '默认合格占比(%)', '计算得出合格线', '备注', '创建时间',
+];
+
 /** 生成 Excel 模板 Buffer（首个工作表 + 表头 + 一行示例） */
 function buildTemplate(headers, sampleRow) {
   const wb = XLSX.utils.book_new();
@@ -85,6 +91,7 @@ function toStr(value) {
 module.exports = {
   STUDENT_HEADERS,
   SCORE_HEADERS,
+  PAPER_BATCH_HEADERS,
   buildTemplate,
   parseSheet,
   missingHeaders,
