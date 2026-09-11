@@ -4,4 +4,6 @@ dist/
 .DS_Store
 server/data/*.db
 server/data/*.db-*
+server/prism_scores.db
+*.db
 .env

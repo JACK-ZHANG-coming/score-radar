@@ -5,7 +5,7 @@ const { authRequired } = require('../middleware/auth');
 const {
   PAPER_BATCH_HEADERS, buildTemplate, parseSheet, missingHeaders, toNum, toStr,
 } = require('../utils/excel');
-const { computedPassLine, deriveCreatedAt } = require('../utils/paperBatch');
+const { computedPassLine, deriveCreatedAt, ensurePaperBatch } = require('../utils/paperBatch');
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
@@ -402,6 +402,84 @@ router.get('/template', authRequired, (req, res) => {
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   res.setHeader('Content-Disposition', 'attachment; filename=paper-batches-template.xlsx');
   res.send(buf);
+});
+
+/** 接口 9：POST /api/paper-batches/sync（批次表与成绩记录批号自动同步）
+ *  body: { execute: boolean }
+ *  - execute=false：仅计算差异计划，不落库
+ *  - execute=true ：服务端重算差异后，在单个事务中执行全部新增+删除，任一步异常整体回滚
+ *  差异口径：scores 中非空批号集合 vs paper_batches 全表批号集合 */
+router.post('/sync', authRequired, (req, res) => {
+  const execute = req.body?.execute === true;
+  // 差异计算：成绩表非空批号（去重） 与 批次表全表
+  const scoreRows = db.prepare(`
+    SELECT DISTINCT batch_no FROM scores WHERE batch_no IS NOT NULL AND batch_no != ''
+  `).all();
+  const batchRows = db.prepare(`
+    SELECT id, batch_no, batch_name, total_full FROM paper_batches
+  `).all();
+
+  const scoreSet = new Set(scoreRows.map((r) => r.batch_no));
+  const batchMap = new Map(batchRows.map((r) => [r.batch_no, r]));
+
+  // 成绩有、批次表无 → 待新增（新行内容与 ensurePaperBatch 占位产物一致）
+  const toCreate = scoreRows
+    .map((r) => r.batch_no)
+    .filter((bn) => !batchMap.has(bn))
+    .map((bn) => ({ batchNo: bn, createdAt: deriveCreatedAt(bn) }));
+  // 批次表有、成绩中已不存在 → 待删除（configured=已配置满分；手填名称即 batch_name !== batch_no 视为高危）
+  const toDelete = batchRows
+    .filter((r) => !scoreSet.has(r.batch_no))
+    .map((r) => ({
+      id: r.id,
+      batchNo: r.batch_no,
+      batchName: r.batch_name,
+      configured: Number(r.total_full) > 0,
+      totalFull: r.total_full,
+    }));
+
+  if (!execute) {
+    return res.json({
+      code: 0,
+      data: {
+        toCreate,
+        toDelete,
+        stat: { createCount: toCreate.length, deleteCount: toDelete.length },
+      },
+    });
+  }
+
+  // execute=true：服务端重算差异（不信任预览阶段结果），单事务执行，任一步异常整体回滚
+  let created = 0;
+  let deleted = 0;
+  try {
+    db.transaction(() => {
+      toCreate.forEach(({ batchNo }) => {
+        // 复用 utils 的占位插入（幂等：批次已存在时不插入）
+        ensurePaperBatch(batchNo);
+        created += 1;
+      });
+      if (toDelete.length) {
+        const placeholders = toDelete.map(() => '?').join(',');
+        const info = db.prepare(`DELETE FROM paper_batches WHERE id IN (${placeholders})`)
+          .run(...toDelete.map((d) => d.id));
+        deleted = info.changes;
+      }
+    })();
+  } catch (e) {
+    // 事务已整体回滚，数据保持原状
+    return res.status(500).json({
+      code: 500,
+      message: `同步执行失败，已整体回滚：${e.message}`,
+    });
+  }
+
+  const total = db.prepare('SELECT COUNT(*) AS c FROM paper_batches').get().c;
+  res.json({
+    code: 0,
+    message: `同步完成：新增 ${created} 条，删除 ${deleted} 条`,
+    data: { created, deleted, total },
+  });
 });
 
 /** 接口 3：PUT /api/paper-batches/:id（编辑） */

@@ -1,5 +1,12 @@
 # MEMORY.md - score-radar 项目长期笔记
 
+## 试卷批次管理·第四轮:批号同步(2026-09-11 交付,未 commit)
+- 接口 9 POST /api/paper-batches/sync {execute}:false=只算差异(toCreate 携 createdAt/toDelete 携 configured+totalFull)不落库;true=服务端重算+db.transaction 单事务(ensurePaperBatch 插入+DELETE IN),异常整体回滚 500。差异口径:scores 非空批号 DISTINCT vs paper_batches 全表,成绩表为唯一事实源(含已配置批次照删,确认框标红 ⚠)。
+- 前端:syncLoading 防重复、无差异 info 不弹窗、ElMessageBox HTML 确认(escapeHtml 五元转义)、取消静默、失败不改本地状态、成功回第1页+fetchList/fetchBatchNoOptions 并行。
+- QA 5/5 PASS(实库只读+副本场景:增2删5三高危形态/众数派生专项/DELETE 注错含 INSERT 回滚/竞态重算实证);engineer 与 QA 双 harness 交叉印证。
+- **数据事实:用户重导过成绩 Excel,scores 51 行批号全空**(昨日尚有);当前点同步=删除批次表 2 行,已向用户明示属预期。
+- server/prism_scores.db:19:08 用户测试时出现的 0 字节空文件,无表无引用,已入 .gitignore(新增局部规则 *.db),未物理删除。
+
 ## 项目概况
 成绩管理后台系统：Vue3 组合式 API + Vite + Element Plus + Pinia（web/，端口 5174）；Express + better-sqlite3 + JWT（server/，端口 3000）。默认账号 admin/admin123。
 

@@ -39,3 +39,7 @@ export const getPaperBatchByNo = (batchNo) =>
 /** 编辑弹窗 0 分项预填：取该批次学生成绩五项最高分（max-scores） */
 export const getPaperBatchMaxScores = (batchNo) =>
   request.get(`/paper-batches/max-scores/${encodeURIComponent(batchNo)}`);
+
+/** 自动更新试卷批号（execute=false 预览差异；execute=true 执行同步） */
+export const syncPaperBatches = (execute) =>
+  request.post('/paper-batches/sync', { execute });

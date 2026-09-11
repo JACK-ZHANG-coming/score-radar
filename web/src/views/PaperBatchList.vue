@@ -47,6 +47,9 @@
             批量删除{{ selectedRows.length ? `(${selectedRows.length})` : '' }}
           </el-button>
           <el-button :icon="Document" @click="exportList">导出</el-button>
+          <el-button type="primary" :icon="Refresh" :loading="syncLoading" @click="handleSync">
+            自动更新试卷批号
+          </el-button>
         </div>
         <div class="toolbar-actions">
           <el-button :icon="Setting" @click="openColumnDialog">列设置</el-button>
@@ -272,7 +275,7 @@ import {
 import {
   getPaperBatches, createPaperBatch, updatePaperBatch, deletePaperBatch,
   deletePaperBatchesBatch, importPaperBatches, downloadPaperBatchTemplate, exportPaperBatches,
-  getPaperBatchMaxScores,
+  getPaperBatchMaxScores, syncPaperBatches,
 } from '../api/paper-batches';
 import { getScoreBatchNos } from '../api/scores';
 
@@ -643,6 +646,84 @@ async function handleBatchDelete() {
     }
   } finally {
     batchDeleting.value = false;
+  }
+}
+
+// ---- 自动更新试卷批号（与成绩记录批号同步）----
+const syncLoading = ref(false);
+
+/** 转义批号中的 HTML 特殊字符，防止批号内容注入确认框 HTML */
+function escapeHtml(str) {
+  return String(str ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/** 构建二次确认弹窗内容：新增清单（含来源日期）+ 删除清单（已配置/手填名称标红）+ 汇总 */
+function buildSyncConfirmHtml(data) {
+  const parts = [];
+  if (data.toCreate?.length) {
+    const rows = data.toCreate.map((c) =>
+      `<li>${escapeHtml(c.batchNo)}<span style="color:#909399">（来源日期 ${escapeHtml(c.createdAt)}）</span></li>`).join('');
+    parts.push(`<div style="margin-bottom:10px"><b>将新增批次（${data.toCreate.length} 条）：</b><ul style="margin:6px 0 0 18px">${rows}</ul></div>`);
+  }
+  if (data.toDelete?.length) {
+    const rows = data.toDelete.map((d) => {
+      // 已配置满分或手动命名（batch_name 与批号不同）的行被删除属高危，标红加粗警示
+      const risky = d.configured || (d.batchName && d.batchName !== d.batchNo);
+      const nameHtml = d.batchName && d.batchName !== d.batchNo ?
+        `<span style="color:#909399">（${escapeHtml(d.batchName)}）</span>` : '';
+      const prefix = risky ? '<b style="color:#f56c6c">⚠ </b>' : '';
+      return `<li>${prefix}${escapeHtml(d.batchNo)}${nameHtml}</li>`;
+    }).join('');
+    parts.push(`<div style="margin-bottom:10px"><b style="color:#f56c6c">将删除批次（${data.toDelete.length} 条，删除后不可恢复）：</b><ul style="margin:6px 0 0 18px">${rows}</ul></div>`);
+  }
+  parts.push(`<div>汇总：新增 <b>${data.stat?.createCount ?? 0}</b> 条，删除 <b>${data.stat?.deleteCount ?? 0}</b> 条。</div>`);
+  return parts.join('');
+}
+
+async function handleSync() {
+  if (syncLoading.value) return;
+  syncLoading.value = true;
+  try {
+    // ① 预览差异（execute=false），不落库
+    const preview = await syncPaperBatches(false);
+    const { toCreate = [], toDelete = [], stat = {} } = preview.data || {};
+    // ② 无差异：直接提示，不弹确认框
+    if (!toCreate.length && !toDelete.length) {
+      ElMessage.info('批次数据与成绩记录已是同步状态，无需操作');
+      return;
+    }
+    // ③ 有差异：二次确认，渲染明细；取消（含点 X）静默放弃，无任何请求与提示
+    let ok = false;
+    try {
+      ok = await ElMessageBox.confirm(buildSyncConfirmHtml({ toCreate, toDelete, stat }), '自动更新试卷批号确认', {
+        type: 'warning',
+        dangerouslyUseHTMLString: true,
+        confirmButtonText: '执行同步',
+        cancelButtonText: '取消',
+      });
+    } catch {
+      return; // 取消/关闭 → 静默放弃
+    }
+    if (!ok) return;
+    // ④ 确认后真正执行（服务端重算差异并单事务执行）
+    const result = await syncPaperBatches(true);
+    const { created = 0, deleted = 0 } = result.data || {};
+    ElMessage.success(`同步完成：新增 ${created} 条，删除 ${deleted} 条`);
+    // ⑤ 刷新页面数据：页码回 1（当前页可能超范围）+ 列表与批号下拉
+    pagination.page = 1;
+    await Promise.all([fetchList(), fetchBatchNoOptions()]);
+  } catch (err) {
+    // 预览或执行任一请求失败：明确提示，不改变任何本地数据状态（错误详情已由拦截器提示）
+    const d = err?.response?.data;
+    const msg = d?.message || '同步操作失败，数据未发生变化';
+    ElMessage.error(msg);
+  } finally {
+    syncLoading.value = false;
   }
 }
 
