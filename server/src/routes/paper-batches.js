@@ -24,12 +24,22 @@ const SORTABLE = {
   createdAt: 'created_at',
 };
 
-/** 列表/by-no 查询返回行时，统一补全派生字段：created_at（众数派生）与 pass_line（运行时计算） */
+/** 解析批号派生班级：取第一个 '-' 之前的部分；无 '-'、前段为空或批号为空 → null（前端显示 —） */
+function deriveClass(batchNo) {
+  const no = String(batchNo ?? '');
+  if (!no) return null;
+  const idx = no.indexOf('-');
+  const head = idx >= 0 ? no.slice(0, idx) : '';
+  return head ? `${head}班` : null;
+}
+
+/** 列表/by-no 查询返回行时，统一补全派生字段：created_at（众数派生）、pass_line（运行时计算）与 class（批号首段派生班级） */
 function attachDerived(row) {
   return {
     ...row,
     created_at: deriveCreatedAt(row.batch_no),
     pass_line: computedPassLine(row.total_full, row.pass_ratio),
+    class: deriveClass(row.batch_no),
   };
 }
 
@@ -275,9 +285,12 @@ router.get('/export', authRequired, (req, res) => {
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
   const rows = db.prepare(`SELECT * FROM paper_batches ${whereSql} ORDER BY id ASC`).all(...params);
 
+  // 导出表头：在「试卷批号」之后插入派生列「班级」（纯展示，导入模板仍为 13 列不含此列）
+  const exportHeaders = ['序号', '试卷批号', '班级', ...PAPER_BATCH_HEADERS.slice(2)];
   const dataRows = rows.map((r, idx) => [
     idx + 1, // 序号
     r.batch_no,
+    deriveClass(r.batch_no), // 班级（批号首段派生，无则 null → 单元格空）
     r.batch_name,
     r.choice_full,
     r.spreadsheet_full,
@@ -293,8 +306,9 @@ router.get('/export', authRequired, (req, res) => {
 
   const XLSX = require('xlsx');
   const wb = XLSX.utils.book_new();
-  const ws = XLSX.utils.aoa_to_sheet([PAPER_BATCH_HEADERS, ...dataRows]);
-  ws['!cols'] = PAPER_BATCH_HEADERS.map((h) => ({ wch: Math.max(10, String(h).length * 2 + 4) }));
+  // 表头与数据行同源：均含「班级」列（数据行 index 2 为派生班级，无则为空单元格）
+  const ws = XLSX.utils.aoa_to_sheet([exportHeaders, ...dataRows]);
+  ws['!cols'] = exportHeaders.map((h) => ({ wch: Math.max(10, String(h).length * 2 + 4) }));
   XLSX.utils.book_append_sheet(wb, ws, 'Sheet1');
   const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
 

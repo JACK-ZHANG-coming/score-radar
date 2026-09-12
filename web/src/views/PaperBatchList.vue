@@ -88,6 +88,10 @@
             <template v-if="col.key === 'pass_line'">
               <el-tag type="warning" size="small">{{ row.pass_line }}</el-tag>
             </template>
+            <!-- 班级（批号首段派生）：无 '-' 前段时后端返回 null，与备注列空值同样显示 — -->
+            <template v-else-if="col.key === 'class'">
+              <span>{{ row.class ?? '—' }}</span>
+            </template>
             <template v-else-if="col.key === 'remark'">
               <el-tooltip v-if="row.remark" :content="row.remark" placement="top" :show-after="300">
                 <span class="remark-cell">{{ row.remark }}</span>
@@ -311,6 +315,8 @@ const STORAGE_KEY = 'paper-batch-list-columns';
 
 const COLUMN_DEFS = [
   { key: 'batch_no', label: '试卷批号', minWidth: 130, align: 'center', sortable: true },
+  // 班级：批号首段（第一个 '-' 之前）派生的纯展示字段，由后端 attachDerived 下发；不可排序
+  { key: 'class', label: '班级', width: 90, align: 'center', sortable: false },
   { key: 'batch_name', label: '试卷批次名称', minWidth: 140, align: 'center', sortable: true },
   { key: 'choice_full', label: '选择题满分', width: 100, align: 'center', sortable: true },
   { key: 'spreadsheet_full', label: '电子表格满分', width: 110, align: 'center', sortable: true },
@@ -340,12 +346,43 @@ function loadColumnConfig() {
   const validKeys = new Set(COLUMN_DEFS.map((d) => d.key));
   const savedValid = saved.filter((s) => validKeys.has(s.key));
   const savedMap = new Map(savedValid.map((s) => [s.key, !!s.visible]));
-  const savedKeySet = new Set(savedValid.map((s) => s.key));
-  const orderedKeys = [
-    ...savedValid.map((s) => s.key),
-    ...COLUMN_DEFS.map((d) => d.key).filter((k) => !savedKeySet.has(k)),
-  ];
+  const orderedKeys = mergeSavedOrder(savedValid.map((s) => s.key));
   return orderedKeys.map((k) => ({ key: k, visible: savedMap.has(k) ? savedMap.get(k) : true }));
+}
+
+/** 存档列序与 COLUMN_DEFS 合并：沿用用户存档的相对顺序（保留用户自定义排列），
+ *  存档缺失的新列不追加到末尾，而是插到其定义前邻列在存档中的位置之后
+ *  ——如「班级」插在「试卷批号」之后，无论用户把批号挪到哪里都保持相邻；
+ *  定义前邻也不在存档时，兜底插到（定义序上）排在它之后的第一个存量列之前；都没有则插末尾。
+ *  保证旧存档升级后新列默认位置与 COLUMN_DEFS 定义一致，且一律可见。 */
+function mergeSavedOrder(savedKeys) {
+  const defKeys = COLUMN_DEFS.map((d) => d.key);
+  const defIndex = new Map(defKeys.map((k, i) => [k, i]));
+  const missingKeys = defKeys.filter((k) => !savedKeys.includes(k));
+  if (!missingKeys.length) return [...savedKeys];
+  const ordered = [...savedKeys];
+  // 已出现键集合：含存档键 + 本轮已插入的新列（连续缺失时后一个可以接在前一个后面）
+  const present = new Set(savedKeys);
+  missingKeys.forEach((k) => {
+    const i = defIndex.get(k);
+    // 找定义前邻：COLUMN_DEFS 中排在 k 之前、且已存在（存档或本轮已插）的最近列
+    let prev = null;
+    for (let p = i - 1; p >= 0; p -= 1) {
+      if (present.has(defKeys[p])) { prev = defKeys[p]; break; }
+    }
+    let pos = -1;
+    if (prev !== null) {
+      // 插到前邻在存档相对顺序中最后一次出现之后
+      pos = ordered.lastIndexOf(prev) + 1;
+    } else {
+      // 无定义前邻：插到（定义序上）第一个排在 k 之后的存量列之前；没有则末尾
+      pos = ordered.findIndex((sk) => defIndex.get(sk) > i);
+      if (pos === -1) pos = ordered.length;
+    }
+    ordered.splice(pos, 0, k);
+    present.add(k);
+  });
+  return ordered;
 }
 
 const columnConfig = ref(loadColumnConfig());
