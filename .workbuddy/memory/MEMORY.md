@@ -7,6 +7,11 @@
 - **数据事实:用户重导过成绩 Excel,scores 51 行批号全空**(昨日尚有);当前点同步=删除批次表 2 行,已向用户明示属预期。
 - server/prism_scores.db:19:08 用户测试时出现的 0 字节空文件,无表无引用,已入 .gitignore(新增局部规则 *.db),未物理删除。
 
+## 试卷批次管理·第五轮:班级派生列(2026-09-12 已 commit 88e85f6)
+- 列表+导出新增「班级」列:批号第一个 `-` 前段+「班」(16-电子表格6_1→16班);多 `-` 取最前;无 `-`/前段空/批号空 → 后端 null 前端显示 —。后端 deriveClass+attachDerived 运行时派生不落库;导出 14 列(班级@批号后),导入模板 13 列不动。
+- 前端 mergeSavedOrder:旧 localStorage 列存档无 class 键时,新列插到定义前邻列在存档中的位置之后(班级永远紧跟批号),不追加末尾;用户自定义排列与可见性保留。
+- QA 7/7 PASS(含 16--x→16班边界、导出解包、四场景存档推演)。
+
 ## 项目概况
 成绩管理后台系统：Vue3 组合式 API + Vite + Element Plus + Pinia（web/，端口 5174）；Express + better-sqlite3 + JWT（server/，端口 3000）。默认账号 admin/admin123。
 
