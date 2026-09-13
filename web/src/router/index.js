@@ -14,6 +14,43 @@ const routes = [
     redirect: '/scores',
     children: [
       {
+        path: 'analysis',
+        redirect: '/analysis/overview',
+        meta: { title: '学生成绩分析', icon: 'TrendCharts' },
+        children: [
+          {
+            path: 'overview',
+            name: 'AnalysisOverview',
+            component: () => import('../views/analysis/AnalysisOverview.vue'),
+            meta: { title: '成绩分析总览' },
+          },
+          {
+            path: 'failures',
+            name: 'AnalysisFailures',
+            component: () => import('../views/analysis/AnalysisFailures.vue'),
+            meta: { title: '不及格管理' },
+          },
+          {
+            path: 'top-students',
+            name: 'AnalysisTopStudents',
+            component: () => import('../views/analysis/AnalysisTopStudents.vue'),
+            meta: { title: '优生管理' },
+          },
+          {
+            path: 'abnormal-profiles',
+            name: 'AnalysisAbnormalProfiles',
+            component: () => import('../views/analysis/AnalysisAbnormalProfiles.vue'),
+            meta: { title: '异常学生画像' },
+          },
+          {
+            path: 'progress-profiles',
+            name: 'AnalysisProgressProfiles',
+            component: () => import('../views/analysis/AnalysisProgressProfiles.vue'),
+            meta: { title: '进步学生画像' },
+          },
+        ],
+      },
+      {
         path: 'scores',
         name: 'Scores',
         component: () => import('../views/ScoreList.vue'),

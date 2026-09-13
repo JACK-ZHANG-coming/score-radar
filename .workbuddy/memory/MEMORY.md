@@ -1,5 +1,11 @@
 # MEMORY.md - score-radar 项目长期笔记
 
+## 学生成绩分析模块·路由骨架(2026-09-12 交付,未 commit)
+- 一级路由 'analysis'(redirect /analysis/overview,icon TrendCharts)置于 'scores' 之前,五个二级:overview 成绩分析总览/failures 不及格管理/top-students 优生管理/abnormal-profiles 异常学生画像/progress-profiles 进步学生画像;占位页 web/src/views/analysis/*.vue(el-card+el-empty 纯模板,无 script)。
+- Layout menus 支持 children 分组(el-sub-menu);点击一级标题→router.push(children[0].path) 的 handleGroupClick 挂在 #title 插槽内 div.sub-menu-title 上。**教训:@click 挂 el-sub-menu 根元素会被二级项冒泡劫持(两级 push 竞争,前者 cancelled,四个非首位二级页点不进)——必须挂 title 插槽内层,与二级 ul 平级兄弟分支,事件路径不交叉**。
+- 折叠态补丁:EP 原生 .el-menu--collapse 直接子 span 隐藏规则因 span 被 div 包裹失配,需补 .el-menu--collapse .sub-menu-title span{visibility:hidden;width:0;height:0;overflow:hidden}(scoped 直接后代写法,构建产物实证命中 span[data-v])。
+- 面包屑 /analysis/* 三级(首页/学生成绩分析/当前页,groupTitle 计算属性),其他页两级不变。QA 两轮:首轮 7P1F(冒泡)→修复→二轮全 PASS+P3 折叠溢出已补;build 通过,五占位页独立 chunk。
+
 ## 试卷批次管理·第四轮:批号同步(2026-09-11 交付,未 commit)
 - 接口 9 POST /api/paper-batches/sync {execute}:false=只算差异(toCreate 携 createdAt/toDelete 携 configured+totalFull)不落库;true=服务端重算+db.transaction 单事务(ensurePaperBatch 插入+DELETE IN),异常整体回滚 500。差异口径:scores 非空批号 DISTINCT vs paper_batches 全表,成绩表为唯一事实源(含已配置批次照删,确认框标红 ⚠)。
 - 前端:syncLoading 防重复、无差异 info 不弹窗、ElMessageBox HTML 确认(escapeHtml 五元转义)、取消静默、失败不改本地状态、成功回第1页+fetchList/fetchBatchNoOptions 并行。
