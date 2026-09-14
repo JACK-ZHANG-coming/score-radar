@@ -6,6 +6,7 @@ const authRoutes = require('./routes/auth');
 const studentRoutes = require('./routes/students');
 const scoreRoutes = require('./routes/scores');
 const paperBatchRoutes = require('./routes/paper-batches');
+const analysisRoutes = require('./routes/analysis');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -22,6 +23,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/students', studentRoutes);
 app.use('/api/scores', scoreRoutes);
 app.use('/api/paper-batches', paperBatchRoutes);
+app.use('/api/analysis', analysisRoutes);
 
 // 404
 app.use((req, res) => res.status(404).json({ code: 404, message: '接口不存在' }));
