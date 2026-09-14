@@ -299,30 +299,46 @@ router.delete('/:id', authRequired, (req, res) => {
   res.json({ code: 0, message: '删除成功' });
 });
 
-/** POST /api/scores/import  Excel 批量导入
- *  试卷批号来源：前端手动输入（batchNo 字段）优先，否则取上传文件名（去扩展名）；
- *  重复校验键：(batch_no, name) —— 同一试卷批号下不允许同名；
- *  - 预扫描发现重复且未携带 overwrite → 返回 409（duplicate + conflictCount），由前端一次性确认
- *  - 确认覆盖（overwrite=true）或本就无重复 → 按 (batch_no, name) 去重：存在则覆盖，否则新增
+/** 导入用写入语句（模块级预编译，多文件导入复用） */
+const importInsert = db.prepare(`
+  INSERT INTO scores (serial_no, exam_no, name, batch_no, school, class, status, submit_time,
+    choice, spreadsheet, access, python, composite, total, correction_score, remark)
+  VALUES (@serial_no, @exam_no, @name, @batch_no, @school, @class, @status, @submit_time,
+    @choice, @spreadsheet, @access, @python, @composite, @total, @correction_score, @remark)
+`);
+const importUpdate = db.prepare(`
+  UPDATE scores SET serial_no=@serial_no, exam_no=@exam_no, name=@name, batch_no=@batch_no, school=@school,
+    class=@class, status=@status, submit_time=@submit_time, choice=@choice, spreadsheet=@spreadsheet,
+    access=@access, python=@python, composite=@composite, total=@total,
+    correction_score=@correction_score, remark=@remark,
+    updated_at=datetime('now','localtime')
+  WHERE id=@id
+`);
+const findByBatchName = db.prepare('SELECT id, correction_score, remark FROM scores WHERE batch_no = ? AND name = ?');
+
+/**
+ * 导入单个 Excel 文件（解析 → 表头校验 → 重复预扫描 → 事务写入）。
+ * 复用原单文件导入的全部校验与写入口径，多文件导入时逐文件调用、各自独立事务。
+ * @param {{buffer: Buffer}} file 上传文件
+ * @param {string} batchNo 该文件关联的试卷批号
+ * @param {boolean} overwrite 是否覆盖同「批号+姓名」的既有记录
+ * @returns {{ok:boolean, inserted:number, updated:number, errors:string[], message:string, conflictCount?:number, conflict?:boolean}}
  */
-router.post('/import', authRequired, upload.single('file'), (req, res) => {
-  if (!req.file) return res.status(400).json({ code: 400, message: '请选择 Excel 文件' });
+function importOneFile(file, batchNo, overwrite) {
   let rows;
   try {
-    rows = parseSheet(req.file.buffer);
+    rows = parseSheet(file.buffer);
   } catch (e) {
-    return res.status(400).json({ code: 400, message: `文件解析失败：${e.message}` });
+    return { ok: false, inserted: 0, updated: 0, errors: [`文件解析失败：${e.message}`], message: `文件解析失败：${e.message}` };
   }
-  if (!rows.length) return res.status(400).json({ code: 400, message: 'Excel 中没有数据行' });
+  if (!rows.length) {
+    return { ok: false, inserted: 0, updated: 0, errors: ['Excel 中没有数据行'], message: 'Excel 中没有数据行' };
+  }
   const missing = missingHeaders(Object.keys(rows[0]), SCORE_HEADERS);
   if (missing.length) {
-    return res.status(400).json({ code: 400, message: `缺少必需列：${missing.join('、')}（模板字段：${SCORE_HEADERS.join('、')}）` });
+    const msg = `缺少必需列：${missing.join('、')}`;
+    return { ok: false, inserted: 0, updated: 0, errors: [msg], message: msg };
   }
-
-  // 试卷批号：手动输入优先，否则取文件名（去扩展名）
-  const fallback = path.parse(req.file.originalname).name;
-  const batchNo = toStr(req.body.batchNo) || fallback;
-  const overwrite = String(req.body.overwrite || '') === 'true';
 
   // 预扫描：统计会与「试卷批号+姓名」冲突的行（现有库记录或文件内重复）
   let conflictCount = 0;
@@ -331,36 +347,22 @@ router.post('/import', authRequired, upload.single('file'), (req, res) => {
     const name = toStr(row['姓名']);
     if (!name) return; // 空姓名本就会被跳过
     const key = `${batchNo}||${name}`;
-    const existing = db.prepare('SELECT id FROM scores WHERE batch_no = ? AND name = ?').get(batchNo, name);
-    if (existing || seen.has(key)) conflictCount += 1;
+    if (findByBatchName.get(batchNo, name) || seen.has(key)) conflictCount += 1;
     seen.add(key);
   });
   if (conflictCount > 0 && !overwrite) {
-    return res.status(409).json({
-      code: 409,
-      message: `导入数据中发现 ${conflictCount} 条与现有「试卷批号+姓名」重复的记录`,
-      data: { duplicate: true, conflictCount },
-    });
+    return {
+      ok: false,
+      inserted: 0,
+      updated: 0,
+      errors: [`存在 ${conflictCount} 条与现有「试卷批号+姓名」重复的记录，需确认覆盖后重试`],
+      message: `存在 ${conflictCount} 条重复记录，需确认覆盖`,
+      conflict: true,
+      conflictCount,
+    };
   }
 
-  const insert = db.prepare(`
-    INSERT INTO scores (serial_no, exam_no, name, batch_no, school, class, status, submit_time,
-      choice, spreadsheet, access, python, composite, total, correction_score, remark)
-    VALUES (@serial_no, @exam_no, @name, @batch_no, @school, @class, @status, @submit_time,
-      @choice, @spreadsheet, @access, @python, @composite, @total, @correction_score, @remark)
-  `);
-  const update = db.prepare(`
-    UPDATE scores SET serial_no=@serial_no, exam_no=@exam_no, name=@name, batch_no=@batch_no, school=@school,
-      class=@class, status=@status, submit_time=@submit_time, choice=@choice, spreadsheet=@spreadsheet,
-      access=@access, python=@python, composite=@composite, total=@total,
-      correction_score=@correction_score, remark=@remark,
-      updated_at=datetime('now','localtime')
-    WHERE id=@id
-  `);
-
-  // 预取该批号配置（同一导入批次统一批号，仅查一次，缓存到事务局部）
   const batchCfg = getPbConfig.get(batchNo);
-
   const doImport = db.transaction((list) => {
     let inserted = 0;
     let updated = 0;
@@ -373,7 +375,7 @@ router.post('/import', authRequired, upload.single('file'), (req, res) => {
         errors.push(`第 ${line} 行：考号或姓名为空，已跳过`);
         return;
       }
-      const exists = db.prepare('SELECT id FROM scores WHERE batch_no = ? AND name = ?').get(batchNo, name);
+      const exists = findByBatchName.get(batchNo, name);
       const s = {
         serial_no: toNum(row['序号']) || null,
         exam_no: examNo,
@@ -403,10 +405,10 @@ router.post('/import', authRequired, upload.single('file'), (req, res) => {
         }
       }
       if (exists) {
-        update.run({ ...s, id: exists.id });
+        importUpdate.run({ ...s, id: exists.id });
         updated += 1;
       } else {
-        insert.run(s);
+        importInsert.run(s);
         inserted += 1;
       }
       ensurePaperBatch(batchNo); // 静默补占位行（事务内幂等）
@@ -415,12 +417,109 @@ router.post('/import', authRequired, upload.single('file'), (req, res) => {
   });
 
   const result = doImport(rows);
+  return {
+    ok: true,
+    inserted: result.inserted,
+    updated: result.updated,
+    errors: result.errors,
+    message: `新增 ${result.inserted} 条，更新 ${result.updated} 条${result.errors.length ? `，跳过 ${result.errors.length} 条` : ''}`,
+  };
+}
+
+/** POST /api/scores/import  Excel 批量导入
+ *  试卷批号来源：前端手动输入（batchNo 字段）优先，否则取上传文件名（去扩展名）；
+ *  重复校验键：(batch_no, name) —— 同一试卷批号下不允许同名；
+ *  - 预扫描发现重复且未携带 overwrite → 返回 409（duplicate + conflictCount），由前端一次性确认
+ *  - 确认覆盖（overwrite=true）或本就无重复 → 按 (batch_no, name) 去重：存在则覆盖，否则新增
+ */
+router.post('/import', authRequired, upload.single('file'), (req, res) => {
+  if (!req.file) return res.status(400).json({ code: 400, message: '请选择 Excel 文件' });
+  // 试卷批号：手动输入优先，否则取文件名（去扩展名）
+  const fallback = path.parse(req.file.originalname).name;
+  const batchNo = toStr(req.body.batchNo) || fallback;
+  const overwrite = String(req.body.overwrite || '') === 'true';
+
+  const r = importOneFile(req.file, batchNo, overwrite);
+  if (!r.ok && r.conflict) {
+    return res.status(409).json({
+      code: 409,
+      message: `导入数据中发现 ${r.conflictCount} 条与现有「试卷批号+姓名」重复的记录`,
+      data: { duplicate: true, conflictCount: r.conflictCount },
+    });
+  }
+  if (!r.ok) return res.status(400).json({ code: 400, message: r.message, data: { errors: r.errors } });
+
   res.json({
     code: 0,
-    message: `导入完成：新增 ${result.inserted} 条，更新 ${result.updated} 条${result.errors.length ? `，跳过 ${result.errors.length} 条` : ''}`,
-    data: result,
+    message: `导入完成：${r.message}`,
+    data: { inserted: r.inserted, updated: r.updated, errors: r.errors },
   });
 });
+
+/** POST /api/scores/import-multi  多文件批量导入（每个文件各自关联一个试卷批号）
+ *  form-data：
+ *    files[]   —— 多个 Excel 文件（顺序即列表顺序）
+ *    batchNos  —— JSON 数组字符串，与 files 顺序一一对应（空则回退为各自文件名去扩展名）
+ *    overwrite —— 'true' 表示覆盖同「试卷批号+姓名」的既有记录
+ *  处理策略：逐文件独立事务，单文件解析/校验/重复冲突失败时仅该文件失败，
+ *           不影响后续文件（已成功写入的其他文件保持入库，不整体回滚）。
+ */
+router.post('/import-multi', authRequired, upload.array('files', 20), (req, res) => {
+  const files = req.files || [];
+  if (!files.length) return res.status(400).json({ code: 400, message: '请选择至少一个 Excel 文件' });
+
+  let batchNos = [];
+  try {
+    const parsed = JSON.parse(req.body.batchNos || '[]');
+    if (Array.isArray(parsed)) batchNos = parsed;
+  } catch (e) {
+    batchNos = []; // 解析失败则全部回退为文件名
+  }
+  const overwrite = String(req.body.overwrite || '') === 'true';
+
+  const details = [];
+  let successFiles = 0;
+  let failedFiles = 0;
+  let inserted = 0;
+  let updated = 0;
+  let skipped = 0;
+
+  files.forEach((file, idx) => {
+    const fileName = file.originalname || '';
+    const fallback = path.parse(fileName).name;
+    const batchNo = toStr(batchNos[idx]) || fallback;
+    const r = importOneFile(file, batchNo, overwrite);
+    if (r.ok) {
+      successFiles += 1;
+      inserted += r.inserted;
+      updated += r.updated;
+      skipped += r.errors.length;
+    } else {
+      failedFiles += 1;
+    }
+    details.push({
+      fileName,
+      batchNo,
+      ok: r.ok,
+      inserted: r.inserted || 0,
+      updated: r.updated || 0,
+      skipped: (r.errors || []).length,
+      message: r.message,
+      conflict: !!r.conflict,
+      errors: (r.errors || []).slice(0, 10), // 最多返回前 10 条失败原因，避免响应过大
+    });
+  });
+
+  res.json({
+    code: 0,
+    message: `导入完成：成功 ${successFiles} 个文件，失败 ${failedFiles} 个文件（新增 ${inserted} 条，更新 ${updated} 条，跳过 ${skipped} 条）`,
+    data: {
+      summary: { totalFiles: files.length, successFiles, failedFiles, inserted, updated, skipped },
+      details,
+    },
+  });
+});
+
 
 /** POST /api/scores/sync-students
  *  以考号为唯一主键，将学生信息管理模块中的最新姓名/班级同步到成绩记录：

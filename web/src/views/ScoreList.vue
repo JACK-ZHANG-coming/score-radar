@@ -284,8 +284,14 @@
       </template>
     </el-dialog>
 
-    <!-- Excel 导入弹窗 -->
-    <el-dialog v-model="importVisible" title="Excel 批量导入成绩" width="520px" destroy-on-close>
+    <!-- Excel 导入弹窗（支持多文件，每个文件单独设置试卷批号） -->
+    <el-dialog
+      v-model="importVisible"
+      title="Excel 批量导入成绩"
+      width="780px"
+      destroy-on-close
+      :close-on-click-modal="false"
+    >
       <el-alert
         type="info"
         :closable="false"
@@ -293,38 +299,108 @@
         title="导入字段须与模板一致：序号、考号、姓名、学校、班级、考试状态、交卷时间、选择题、电子表格、Access、Python、综合题、总成绩"
         style="margin-bottom: 16px"
       />
-      <el-form label-width="90px" style="margin-bottom: 14px">
-        <el-form-item label="试卷批号" prop="importBatchNo">
-          <el-input
-            v-model="importBatchNo"
-            placeholder="默认取文件名，可手动修改为统一批号"
-            clearable
-          />
-        </el-form-item>
-      </el-form>
-      <el-upload
-        ref="uploadRef"
-        drag
-        action=""
-        :auto-upload="false"
-        :limit="1"
-        accept=".xlsx,.xls"
-        :on-change="handleFileChange"
-        :on-remove="() => (importFile = null)"
-      >
-        <el-icon :size="40" color="#c0c4cc"><UploadFilled /></el-icon>
-        <div>将 Excel 文件拖到此处，或点击选择</div>
-        <template #tip>
-          <div style="color: #909399; font-size: 12px">
-            同一「试卷批号 + 姓名」视为重复：确认后覆盖，否则新增
-          </div>
-        </template>
-      </el-upload>
+
+      <div class="import-toolbar">
+        <el-upload
+          ref="uploadRef"
+          multiple
+          action=""
+          :auto-upload="false"
+          :show-file-list="false"
+          accept=".xlsx,.xls"
+          :on-change="handleFilesChange"
+        >
+          <el-button type="primary" :icon="Upload">选择 Excel 文件（可多选）</el-button>
+        </el-upload>
+        <el-checkbox v-model="importOverwrite" style="margin-left: 16px">
+          重复时覆盖（试卷批号+姓名相同）
+        </el-checkbox>
+        <span class="import-tip">单文件不超过 10MB，最多 20 个文件</span>
+      </div>
+
+      <!-- 已选文件列表：文件名 + 大小 + 可编辑试卷批号 + 移除 -->
+      <el-table v-if="importFiles.length" :data="importFiles" border size="small" style="margin-top: 12px">
+        <el-table-column type="index" label="#" width="46" align="center" />
+        <el-table-column label="文件名" min-width="200" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.name }}</template>
+        </el-table-column>
+        <el-table-column label="大小" width="90" align="center">
+          <template #default="{ row }">{{ formatSize(row.size) }}</template>
+        </el-table-column>
+        <el-table-column label="试卷批号" min-width="220">
+          <template #default="{ row, $index }">
+            <el-input
+              v-model="row.batchNo"
+              size="small"
+              placeholder="必填，默认取文件名"
+              @input="validateImportFiles"
+            />
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="70" align="center">
+          <template #default="{ $index }">
+            <el-button link type="danger" size="small" @click="removeImportFile($index)">移除</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+      <el-empty v-else description="尚未选择文件" :image-size="60" style="padding: 18px 0" />
+
+      <div v-if="importErrors.length" class="import-errors">
+        <div v-for="(e, i) in importErrors" :key="i" class="import-error-item">⚠ {{ e }}</div>
+      </div>
+
       <template #footer>
         <el-button @click="importVisible = false">取消</el-button>
-        <el-button type="success" :loading="importing" :disabled="!importFile" @click="handleImport">
-          开始导入
+        <el-button
+          type="success"
+          :loading="importing"
+          :disabled="!importFiles.length"
+          @click="handleImport"
+        >
+          开始导入（{{ importFiles.length }}）
         </el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 导入结果汇总 -->
+    <el-dialog v-model="importResultVisible" title="导入结果" width="760px" destroy-on-close>
+      <div v-if="importResult" class="result-summary">
+        <el-tag type="info">文件总数 {{ importResult.summary.totalFiles }}</el-tag>
+        <el-tag type="success">成功 {{ importResult.summary.successFiles }}</el-tag>
+        <el-tag type="danger">失败 {{ importResult.summary.failedFiles }}</el-tag>
+        <el-tag type="success" effect="plain">新增 {{ importResult.summary.inserted }} 条</el-tag>
+        <el-tag type="warning" effect="plain">更新 {{ importResult.summary.updated }} 条</el-tag>
+        <el-tag type="info" effect="plain">跳过 {{ importResult.summary.skipped }} 条</el-tag>
+      </div>
+      <el-alert
+        type="warning"
+        :closable="false"
+        show-icon
+        style="margin: 12px 0"
+        title="处理策略：各文件独立写入，单文件失败不会影响其他文件；失败文件可修正后重新导入。"
+      />
+      <el-table :data="importResult ? importResult.details : []" border size="small" max-height="380">
+        <el-table-column label="文件名" min-width="170" show-overflow-tooltip prop="fileName" />
+        <el-table-column label="试卷批号" min-width="150" show-overflow-tooltip prop="batchNo" />
+        <el-table-column label="结果" width="72" align="center">
+          <template #default="{ row }">
+            <el-tag :type="row.ok ? 'success' : 'danger'" size="small">
+              {{ row.ok ? '成功' : '失败' }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="新增/更新/跳过" width="120" align="center">
+          <template #default="{ row }">{{ row.inserted }} / {{ row.updated }} / {{ row.skipped }}</template>
+        </el-table-column>
+        <el-table-column label="说明" min-width="200">
+          <template #default="{ row }">
+            <div>{{ row.message }}</div>
+            <div v-for="(e, i) in row.errors" :key="i" class="result-error">· {{ e }}</div>
+          </template>
+        </el-table-column>
+      </el-table>
+      <template #footer>
+        <el-button type="primary" @click="closeImportResult">确定</el-button>
       </template>
     </el-dialog>
 
@@ -379,7 +455,7 @@ import { ElMessage, ElMessageBox } from 'element-plus';
 import { Search, Refresh, Plus, Upload, Download, Edit, Delete, UploadFilled, RefreshRight, Setting, Top, Bottom } from '@element-plus/icons-vue';
 import {
   getScores, getScoreOptions, createScore, updateScore, deleteScore,
-  deleteScoresBatch, importScores, downloadScoreTemplate, syncStudents,
+  deleteScoresBatch, importScoresMulti, downloadScoreTemplate, syncStudents,
   getScoreBatchNos,
 } from '../api/scores';
 
@@ -677,58 +753,126 @@ async function handleBatchDelete() {
   }
 }
 
-// ---- Excel 导入 ----
+// ---- Excel 导入（多文件，每个文件单独设置试卷批号）----
+const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+const MAX_FILES = 20;
 const importVisible = ref(false);
 const importing = ref(false);
-const importFile = ref(null);
-const importBatchNo = ref('');
+const importFiles = ref([]); // [{ name, size, raw, batchNo }]
+const importOverwrite = ref(false);
+const importErrors = ref([]);
+const importResultVisible = ref(false);
+const importResult = ref(null);
 const uploadRef = ref(null);
 
-function handleFileChange(file) {
-  importFile.value = file.raw || null;
-  // 试卷批号默认取文件名（去扩展名），可手动修改
-  importBatchNo.value = (file.name || '').replace(/\.[^.]+$/, '');
+function formatSize(bytes) {
+  const b = Number(bytes) || 0;
+  if (b < 1024) return `${b} B`;
+  if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
+  return `${(b / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function isExcel(name) {
+  return /\.(xlsx|xls)$/i.test(name || '');
+}
+
+// 选择文件：追加到列表，校验类型/大小/空文件/重复，批号默认取文件名（去扩展名）
+function handleFilesChange(file) {
+  const raw = file.raw;
+  if (!raw) return;
+  const name = raw.name || '';
+  if (!isExcel(name)) {
+    ElMessage.error(`「${name}」不是 Excel 文件（仅支持 .xlsx / .xls）`);
+    return;
+  }
+  if (!raw.size) {
+    ElMessage.error(`「${name}」是空文件，已忽略`);
+    return;
+  }
+  if (raw.size > MAX_FILE_SIZE) {
+    ElMessage.error(`「${name}」超过 10MB，已忽略`);
+    return;
+  }
+  if (importFiles.value.length >= MAX_FILES) {
+    ElMessage.error(`最多同时导入 ${MAX_FILES} 个文件`);
+    return;
+  }
+  if (importFiles.value.some((f) => f.name === name && f.size === raw.size)) {
+    ElMessage.warning(`「${name}」已在列表中，已忽略重复选择`);
+    return;
+  }
+  importFiles.value.push({
+    name,
+    size: raw.size,
+    raw,
+    batchNo: name.replace(/\.[^.]+$/, ''), // 默认以文件名作为试卷批号
+  });
+  validateImportFiles();
+}
+
+function removeImportFile(index) {
+  importFiles.value.splice(index, 1);
+  validateImportFiles();
+}
+
+// 批号校验：不能为空、不能在同一批次内重复
+function validateImportFiles() {
+  const errs = [];
+  const seen = new Map();
+  importFiles.value.forEach((f, i) => {
+    const no = (f.batchNo || '').trim();
+    if (!no) errs.push(`第 ${i + 1} 个文件「${f.name}」的试卷批号不能为空`);
+    else if (seen.has(no)) {
+      errs.push(`第 ${i + 1} 个文件与第 ${seen.get(no) + 1} 个文件的试卷批号重复：${no}`);
+    } else {
+      seen.set(no, i);
+    }
+  });
+  importErrors.value = errs;
+  return errs.length === 0;
 }
 
 async function handleImport() {
-  if (!importFile.value) return;
+  if (!importFiles.value.length) return;
+  if (!validateImportFiles()) {
+    ElMessage.error('请先修正文件列表中的校验问题');
+    return;
+  }
   importing.value = true;
   try {
     const fd = new FormData();
-    fd.append('file', importFile.value);
-    fd.append('batchNo', importBatchNo.value || '');
-    const res = await importScores(fd);
-    ElMessage.success(res.message);
+    // 文件顺序与 batchNos 顺序严格一致，逐个 append
+    importFiles.value.forEach((f) => fd.append('files', f.raw, f.name));
+    fd.append('batchNos', JSON.stringify(importFiles.value.map((f) => (f.batchNo || '').trim())));
+    fd.append('overwrite', importOverwrite.value ? 'true' : 'false');
+
+    const res = await importScoresMulti(fd);
+    importResult.value = res.data || null;
+    importResultVisible.value = true;
+    const s = importResult.value?.summary;
+    if (s && s.failedFiles === 0) ElMessage.success(`导入完成：成功 ${s.successFiles} 个文件`);
+    else if (s) ElMessage.warning(`导入完成：成功 ${s.successFiles} 个，失败 ${s.failedFiles} 个`);
     finishImport();
   } catch (err) {
-    const d = err.response?.data;
-    if (err.response?.status === 409 && d?.data?.duplicate) {
-      const n = d.data.conflictCount || 0;
-      const ok = await ElMessageBox.confirm(
-        `导入数据中发现 ${n} 条与现有「试卷批号+姓名」重复的记录，是否用新数据覆盖这些记录？`,
-        '重复记录确认',
-        { type: 'warning', confirmButtonText: '覆盖导入', cancelButtonText: '取消' },
-      ).catch(() => false);
-      if (ok) {
-        const fd2 = new FormData();
-        fd2.append('file', importFile.value);
-        fd2.append('batchNo', importBatchNo.value || '');
-        fd2.append('overwrite', 'true');
-        const res2 = await importScores(fd2);
-        ElMessage.success(res2.message);
-        finishImport();
-      }
-    }
-    // 其余错误已由拦截器提示
+    // 错误提示已由拦截器统一处理
   } finally {
     importing.value = false;
   }
 }
 
+function closeImportResult() {
+  importResultVisible.value = false;
+  importResult.value = null;
+  fetchList();
+  fetchOptions();
+  fetchBatchNos();
+}
+
 function finishImport() {
   importVisible.value = false;
-  importFile.value = null;
-  importBatchNo.value = '';
+  importFiles.value = [];
+  importErrors.value = [];
+  importOverwrite.value = false;
   uploadRef.value?.clearFiles();
   fetchList();
   fetchOptions();
@@ -871,6 +1015,47 @@ onMounted(() => {
   white-space: nowrap;
   vertical-align: bottom;
 }
+/* 多文件导入：工具栏 / 校验提示 / 结果汇总 */
+.import-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.import-tip {
+  margin-left: auto;
+  font-size: 12px;
+  color: #909399;
+}
+
+.import-errors {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border: 1px solid #fde2e2;
+  background: #fef0f0;
+  border-radius: 4px;
+}
+
+.import-error-item {
+  font-size: 12px;
+  color: #f56c6c;
+  line-height: 1.8;
+}
+
+.result-summary {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+
+.result-error {
+  font-size: 12px;
+  color: #e6a23c;
+  line-height: 1.6;
+}
+
 /* 移动端小屏：备注列适度收窄，确保横向滚动更平顺 */
 @media (max-width: 768px) {
   :deep(.el-table .remark-cell) {

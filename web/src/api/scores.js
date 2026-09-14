@@ -11,6 +11,12 @@ export const importScores = (formData) =>
   request.post('/scores/import', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
   });
+// 多文件导入：每个文件各自携带一个试卷批号（batchNos 为 JSON 数组字符串）
+export const importScoresMulti = (formData) =>
+  request.post('/scores/import-multi', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 120000,
+  });
 export const syncStudents = () => request.post('/scores/sync-students');
 export const downloadScoreTemplate = () =>
   request.get('/scores/template', { responseType: 'blob' });
