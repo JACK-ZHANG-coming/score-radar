@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
+const fs = require('fs');
 const seed = require('./seed');
 const authRoutes = require('./routes/auth');
 const studentRoutes = require('./routes/students');
@@ -24,6 +25,17 @@ app.use('/api/students', studentRoutes);
 app.use('/api/scores', scoreRoutes);
 app.use('/api/paper-batches', paperBatchRoutes);
 app.use('/api/analysis', analysisRoutes);
+
+// SPA 回退：history 路由下，非 /api 的 GET 请求若静态文件未命中，回送 index.html
+const spaIndexPath = path.join(__dirname, '..', '..', 'web', 'dist', 'index.html');
+app.use((req, res, next) => {
+  if (req.method === 'GET' && !req.path.startsWith('/api')) {
+    if (fs.existsSync(spaIndexPath)) {
+      return res.sendFile(spaIndexPath);
+    }
+  }
+  next();
+});
 
 // 404
 app.use((req, res) => res.status(404).json({ code: 404, message: '接口不存在' }));
