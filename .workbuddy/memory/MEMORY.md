@@ -1,5 +1,12 @@
 # MEMORY.md - score-radar 项目长期笔记
 
+## 部署·cjgl.zhangqiang.hk.cn（2026-09-15 **已上线**,未 commit）
+- **线上事实**：https://cjgl.zhangqiang.hk.cn 可访问，HTTP/2+LE 证书（至 2026-12-14，自动续期 dry-run 通过）。形态：nginx(sites-available/cjgl 软链，80:ACME+301/443:反代) → 127.0.0.1:3000 Express(pm2 7.0.4 守护,score-radar)。代码 **/var/www/cjgl**（服务器惯例 /var/www/<站点名>，非 /www/wwwroot），ACME webroot 独立 **/var/www/cjgl-webroot**。
+- 数据已迁：1252 学生/227 成绩/4 批次（本地 sqlite3 .backup 在线备份，WAL 安全）。admin/admin123 已可登录。
+- **增量部署铁律：rsync 必加 --exclude 'deploy/pm2/ecosystem.config.js'**（真实 JWT_SECRET 仅存服务器该文件，本地是占位值，方向覆盖会泄密钥失效/重置为占位）。变更后 pm2 restart + curl health 验证。
+- 教训：部署前先摸清服务器实际约定（本例 conf.d 空目录、无 /www/wwwroot，与文档假设不符）；SSH 多行内联脚本引号易碎→本地生成+scp；certbot dry-run 6 证书约 3 分钟需后台/宽超时。
+- SPA 回退已带上线：深链刷新 /analysis/overview 返回页面；`listen 443 ssl http2;` 行内写法（nginx 1.24.0 兼容）线上 h2 实证生效。
+
 ## 学生成绩分析模块·路由骨架(2026-09-12 交付,未 commit)
 - 一级路由 'analysis'(redirect /analysis/overview,icon TrendCharts)置于 'scores' 之前,五个二级:overview 成绩分析总览/failures 不及格管理/top-students 优生管理/abnormal-profiles 异常学生画像/progress-profiles 进步学生画像;占位页 web/src/views/analysis/*.vue(el-card+el-empty 纯模板,无 script)。
 - Layout menus 支持 children 分组(el-sub-menu);点击一级标题→router.push(children[0].path) 的 handleGroupClick 挂在 #title 插槽内 div.sub-menu-title 上。**教训:@click 挂 el-sub-menu 根元素会被二级项冒泡劫持(两级 push 竞争,前者 cancelled,四个非首位二级页点不进)——必须挂 title 插槽内层,与二级 ul 平级兄弟分支,事件路径不交叉**。
