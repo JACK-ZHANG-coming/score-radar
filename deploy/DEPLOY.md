@@ -3,6 +3,15 @@
 > 目标：将 score-radar（成绩管理后台系统）部署到自有服务器 `43.134.106.173`（Ubuntu 24.04），通过 `https://cjgl.zhangqiang.hk.cn` 对外提供服务。
 > 以下所有命令均假设在**本地 macOS（darwin）终端**或**服务器 SSH 终端**执行，每条可直接复制。
 
+## 双实例总览（2026-09-15 起本仓库支持两套独立部署）
+
+| 实例 | 域名 | 代码目录 | 端口 | pm2 进程名 | 数据库 | nginx 配置 | pm2 配置 |
+|---|---|---|---|---|---|---|---|
+| cjgl（第一套） | cjgl.zhangqiang.hk.cn | /var/www/cjgl | 3000 | score-radar | /var/www/cjgl/server/data/score_radar.db | deploy/nginx/cjgl.zhangqiang.hk.cn.conf → sites-available/cjgl | deploy/pm2/ecosystem.config.js |
+| **cjglzq（第二套）** | cjglzq.zhangqiang.hk.cn | /var/www/cjglzq | **3001** | **score-radar-zq** | /var/www/cjglzq/server/data/score_radar.db（全新空库自举） | deploy/nginx/cjglzq.zhangqiang.hk.cn.conf → sites-available/cjglzq | deploy/pm2/ecosystem-cjglzq.config.js |
+
+**两实例五完全独立**：目录树 / 进程 / 端口 / JWT_SECRET / 数据库文件，互不复用互不共享；各自独立 LE 证书与 crontab 备份（cjgl 03:00、cjglzq 03:15 错峰）。对任一实例做增量更新时，**rsync 目标路径必须写对**（下表命令把 cjgl 全文中的 `cjgl` 相关标识替换为 cjglzq 系即可：路径 /var/www/cjgl→cjglzq、exclude 加 `deploy/pm2/ecosystem-cjglzq.config.js`、pm2 restart score-radar-zq）。
+
 ## 架构一览
 
 ```
