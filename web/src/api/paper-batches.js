@@ -43,3 +43,7 @@ export const getPaperBatchMaxScores = (batchNo) =>
 /** 自动更新试卷批号（execute=false 预览差异；execute=true 执行同步） */
 export const syncPaperBatches = (execute) =>
   request.post('/paper-batches/sync', { execute });
+
+/** 一键修改合格占比：按当前筛选条件批量覆盖（body: { passRatio, name, batchNo }） */
+export const updatePassRatioBatch = (data) =>
+  request.post('/paper-batches/batch-pass-ratio', data);

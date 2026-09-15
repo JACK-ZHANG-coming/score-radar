@@ -50,6 +50,14 @@
           <el-button type="primary" :icon="Refresh" :loading="syncLoading" @click="handleSync">
             自动更新试卷批号
           </el-button>
+          <el-button
+            type="warning"
+            :icon="EditPen"
+            :loading="ratioLoading"
+            @click="handleBatchPassRatio"
+          >
+            一键修改合格占比
+          </el-button>
         </div>
         <div class="toolbar-actions">
           <el-button :icon="Setting" @click="openColumnDialog">列设置</el-button>
@@ -275,11 +283,12 @@ import { computed, onMounted, reactive, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import {
   Search, Refresh, Plus, Upload, Download, Edit, Delete, UploadFilled, Setting, Top, Bottom, Document,
+  EditPen,
 } from '@element-plus/icons-vue';
 import {
   getPaperBatches, createPaperBatch, updatePaperBatch, deletePaperBatch,
   deletePaperBatchesBatch, importPaperBatches, downloadPaperBatchTemplate, exportPaperBatches,
-  getPaperBatchMaxScores, syncPaperBatches,
+  getPaperBatchMaxScores, syncPaperBatches, updatePassRatioBatch,
 } from '../api/paper-batches';
 import { getScoreBatchNos } from '../api/scores';
 
@@ -440,6 +449,75 @@ function handleReset() {
   sort.sortField = '';
   sort.sortOrder = '';
   fetchList();
+}
+
+// ---- 一键修改合格占比（作用于当前筛选条件）----
+const ratioLoading = ref(false);
+
+/** 校验输入：0~100 的数字，允许小数；返回 true 表示通过，否则返回错误提示 */
+function validateRatio(v) {
+  const s = String(v ?? '').trim();
+  if (!s) return '合格占比不能为空';
+  if (!/^\d+(\.\d+)?$/.test(s)) return '请输入 0~100 的数字（允许小数）';
+  const n = Number(s);
+  if (!Number.isFinite(n) || n < 0 || n > 100) return '合格占比需在 0~100 之间';
+  return true;
+}
+
+async function handleBatchPassRatio() {
+  if (!total.value) {
+    ElMessage.warning('当前筛选条件下没有试卷批次');
+    return;
+  }
+  let input;
+  try {
+    const { value } = await ElMessageBox.prompt(
+      '请输入合格占比（0~100，允许小数），确认后将覆盖各批次原有值',
+      '一键修改合格占比',
+      {
+        confirmButtonText: '下一步',
+        cancelButtonText: '取消',
+        inputValue: '60',
+        inputValidator: validateRatio,
+      },
+    );
+    input = value;
+  } catch {
+    return; // 用户取消输入
+  }
+
+  const ratio = Number(String(input).trim());
+  // 二次确认：明确影响范围
+  try {
+    await ElMessageBox.confirm(
+      `将把合格占比统一修改为 ${ratio}%，影响当前筛选条件下的 ${total.value} 条试卷批次（已归档/不可编辑的批次会自动跳过），各批次原有值将被覆盖，确认执行？`,
+      '二次确认',
+      { type: 'warning', confirmButtonText: '确认修改', cancelButtonText: '取消' },
+    );
+  } catch {
+    return; // 用户取消确认
+  }
+
+  ratioLoading.value = true;
+  try {
+    const res = await updatePassRatioBatch({ passRatio: ratio, ...query });
+    const s = res.data?.summary || { updated: 0, skipped: 0, failed: 0 };
+    const d = res.data?.details || { failed: [], skipped: [] };
+    if (s.failed > 0) {
+      // 存在失败：弹出明细（最多展示 10 条）
+      const lines = d.failed.slice(0, 10).map((f) => `${f.batchNo}：${f.reason}`).join('<br/>');
+      ElMessageBox.alert(
+        `成功 ${s.updated} 条，跳过 ${s.skipped} 条，失败 ${s.failed} 条。<br/><br/>${lines}${d.failed.length > 10 ? '<br/>…' : ''}`,
+        '部分批次修改失败',
+        { dangerouslyUseHTMLString: true, type: 'error' },
+      ).catch(() => {});
+    } else {
+      ElMessage.success(`成功修改 ${s.updated} 条${s.skipped ? `，跳过 ${s.skipped} 条` : ''}`);
+    }
+    fetchList(); // 自动刷新
+  } finally {
+    ratioLoading.value = false;
+  }
 }
 
 function handleSizeChange(size) {

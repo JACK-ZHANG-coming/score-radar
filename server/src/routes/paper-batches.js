@@ -79,6 +79,95 @@ function validatePaperBatch(body) {
   return null;
 }
 
+/** 不可编辑的状态值（当前数据模型暂无状态字段，预留扩展；命中即跳过） */
+const LOCKED_STATUS = new Set(['archived', 'finished', 'ended', 'locked', 'disabled', '已归档', '已结束', '已锁定']);
+
+/**
+ * 判断试卷批次是否可编辑：可编辑返回 null，不可编辑返回跳过原因。
+ * 规则：① 批号为空（无法定位批次）；② 已归档（archived = 1/true）；
+ *      ③ 状态字段为「归档/结束/锁定」类值（数据模型新增 status 字段后自动生效）。
+ */
+function notEditableReason(row) {
+  const no = String(row.batch_no ?? '').trim();
+  if (!no) return '批号为空，无法定位批次';
+  if (row.archived === 1 || row.archived === true) return '批次已归档，不可编辑';
+  const status = String(row.status ?? '').trim();
+  if (status && LOCKED_STATUS.has(status.toLowerCase())) return `批次状态为「${status}」，不可编辑`;
+  return null;
+}
+
+/** 接口 10：POST /api/paper-batches/batch-pass-ratio  批量修改合格占比（作用于当前筛选条件）
+ *  body：passRatio（0~100，允许小数）、name / batchNo（筛选条件，与列表接口一致）
+ *  处理：整批包裹在事务中；不可编辑的批次默认跳过（不计入失败）；
+ *        单条更新异常记录明细并继续，最终提交成功部分，返回成功/跳过/失败数量与明细
+ */
+router.post('/batch-pass-ratio', authRequired, (req, res) => {
+  const body = req.body || {};
+  const raw = body.passRatio;
+  const ratio = Number(raw);
+  if (raw === '' || raw === null || raw === undefined || !Number.isFinite(ratio)) {
+    return res.status(400).json({ code: 400, message: '合格占比必须为数字' });
+  }
+  if (ratio < 0 || ratio > 100) {
+    return res.status(400).json({ code: 400, message: '合格占比需在 0~100 之间' });
+  }
+
+  // 与列表接口完全一致的筛选条件
+  const { name = '', batchNo = '' } = body;
+  const where = [];
+  const params = [];
+  if (name) {
+    where.push('batch_name LIKE ?');
+    params.push(`%${name}%`);
+  }
+  if (batchNo) {
+    where.push('batch_no LIKE ?');
+    params.push(`%${batchNo}%`);
+  }
+  const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  const rows = db.prepare(`SELECT * FROM paper_batches ${whereSql} ORDER BY id ASC`).all(...params);
+
+  if (!rows.length) {
+    return res.json({
+      code: 0,
+      message: '当前筛选条件下没有试卷批次',
+      data: { summary: { total: 0, updated: 0, skipped: 0, failed: 0 }, details: { skipped: [], failed: [] } },
+    });
+  }
+
+  const updateStmt = db.prepare(
+    "UPDATE paper_batches SET pass_ratio = ?, updated_at = datetime('now','localtime') WHERE id = ?",
+  );
+  const skipped = [];
+  const failed = [];
+  let updated = 0;
+
+  db.transaction((list) => {
+    list.forEach((row) => {
+      const reason = notEditableReason(row);
+      if (reason) {
+        skipped.push({ batchNo: row.batch_no, batchName: row.batch_name, reason });
+        return;
+      }
+      try {
+        updateStmt.run(ratio, row.id);
+        updated += 1;
+      } catch (e) {
+        failed.push({ batchNo: row.batch_no, batchName: row.batch_name, reason: e.message || '更新失败' });
+      }
+    });
+  })(rows);
+
+  res.json({
+    code: 0,
+    message: `批量修改完成：成功 ${updated} 条，跳过 ${skipped.length} 条，失败 ${failed.length} 条`,
+    data: {
+      summary: { total: rows.length, updated, skipped: skipped.length, failed: failed.length },
+      details: { skipped, failed },
+    },
+  });
+});
+
 /** 接口 1：GET /api/paper-batches（查询 + 分页 + 排序 + 筛选） */
 router.get('/', authRequired, (req, res) => {
   const { name = '', batchNo = '', sortField = '', sortOrder = 'asc' } = req.query;
