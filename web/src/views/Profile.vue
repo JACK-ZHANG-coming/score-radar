@@ -16,7 +16,7 @@
       </el-card>
 
       <!-- 修改密码 -->
-      <el-card shadow="never">
+      <!-- <el-card shadow="never">
         <template #header>
           <div class="card-header">
             <el-icon><Lock /></el-icon>
@@ -44,7 +44,7 @@
             <el-button @click="handleReset">重置</el-button>
           </el-form-item>
         </el-form>
-      </el-card>
+      </el-card> -->
     </el-col>
   </el-row>
 </template>

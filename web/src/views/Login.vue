@@ -32,7 +32,6 @@
           </el-button>
         </el-form-item>
       </el-form>
-      <div class="login-tip">默认账号：admin　密码：admin123</div>
     </el-card>
   </div>
 </template>
