@@ -1,6 +1,9 @@
 # MEMORY.md - score-radar 项目长期笔记
 
-## 部署·cjgl.zhangqiang.hk.cn（2026-09-15 **已上线**,未 commit）
+## 部署·双实例 cjgl + cjglzq（2026-09-15 均已上线,未 commit）
+- **cjglzq 第二实例**：/var/www/cjglzq、端口 3001、pm2 score-radar-zq、独立 JWT_SECRET、**全新自举库**（不含旧站二次导入数据）；证书至 2026-12-14；crontab 03:15 备份错峰。cross-write 实证隔离（写入只落新库），旧站基线 1252/395/7/1 验证未动。students 接口字段是 exam_no 蛇形。
+- **http2/default 站点告警**：Ubuntu default 站点 443 无 http2 与两新站 `listen 443 ssl http2` 重定义告警，用户拍板保留 http2（告警无害、SNI 命中不受影响）；去掉则 h2 降级 1.1。根治需统一 default 声明，未动。
+- 仓库新增：deploy/nginx/cjglzq...conf + deploy/pm2/ecosystem-cjglzq.config.js（独立配置文件防 rsync 互覆盖）；DEPLOY.md 双实例总览表。增量更新两站时 exclude 列表要加入对方的配置文件。
 - **线上事实**：https://cjgl.zhangqiang.hk.cn 可访问，HTTP/2+LE 证书（至 2026-12-14，自动续期 dry-run 通过）。形态：nginx(sites-available/cjgl 软链，80:ACME+301/443:反代) → 127.0.0.1:3000 Express(pm2 7.0.4 守护,score-radar)。代码 **/var/www/cjgl**（服务器惯例 /var/www/<站点名>，非 /www/wwwroot），ACME webroot 独立 **/var/www/cjgl-webroot**。
 - 数据已迁：1252 学生/227 成绩/4 批次（本地 sqlite3 .backup 在线备份，WAL 安全）。admin/admin123 已可登录。
 - **增量部署铁律：rsync 必加 --exclude 'deploy/pm2/ecosystem.config.js'**（真实 JWT_SECRET 仅存服务器该文件，本地是占位值，方向覆盖会泄密钥失效/重置为占位）。变更后 pm2 restart + curl health 验证。
