@@ -15,17 +15,19 @@ const getPbConfig = db.prepare(
 
 /**
  * 按试卷批号配置校验单条成绩分数合法性（仅「已配置」批号生效，即 total_full > 0）。
+ * 放宽语义：分项满分为 0 视为该科不限制（允许学生该科得分 > 0）——适配「一键设置总满分」后
+ * 批次已配置总分但部分分项满分仍为 0 的场景；总分校验（s.total > cfg.total_full）保留。
  * 返回错误信息字符串或 null（通过）。未配置（占位行）则跳过校验。
  */
 function validateScoreByConfig(batchNo, s) {
   if (!batchNo) return null;
   const cfg = getPbConfig.get(batchNo);
   if (!cfg || !(cfg.total_full > 0)) return null;
-  if (s.choice > cfg.choice_full) return '选择题得分超出试卷满分配置';
-  if (s.spreadsheet > cfg.spreadsheet_full) return '电子表格得分超出试卷满分配置';
-  if (s.access > cfg.access_full) return 'Access得分超出试卷满分配置';
-  if (s.python > cfg.python_full) return 'Python得分超出试卷满分配置';
-  if (s.composite > cfg.composite_full) return '综合题得分超出试卷满分配置';
+  if (cfg.choice_full > 0 && s.choice > cfg.choice_full) return '选择题得分超出试卷满分配置';
+  if (cfg.spreadsheet_full > 0 && s.spreadsheet > cfg.spreadsheet_full) return '电子表格得分超出试卷满分配置';
+  if (cfg.access_full > 0 && s.access > cfg.access_full) return 'Access得分超出试卷满分配置';
+  if (cfg.python_full > 0 && s.python > cfg.python_full) return 'Python得分超出试卷满分配置';
+  if (cfg.composite_full > 0 && s.composite > cfg.composite_full) return '综合题得分超出试卷满分配置';
   if (s.total > cfg.total_full) return '总分超出试卷满分配置';
   return null;
 }

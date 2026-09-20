@@ -168,9 +168,159 @@ router.post('/batch-pass-ratio', authRequired, (req, res) => {
   });
 });
 
-/** 接口 1：GET /api/paper-batches（查询 + 分页 + 排序 + 筛选） */
+/** 接口 11：GET /api/paper-batches/total-full-preview  一键设置总满分·预览
+ *  仅返回「五项分项满分全为 0（分项从未配置）」的批次，覆盖两类：
+ *  ① 同步/占位产生的全 0 新行；② 历史遗留的「总满分已设、分项全 0」不一致行（旧版接口只写 total_full 产生），可借此修复。
+ *  任一分项 > 0（如 0/10/0/0/0）即视为已配置，不出现在列表中，不受批量设置影响。
+ *  返回 {id, batchNo, batchName, studentCount, maxTotal, maxChoice, maxSpreadsheet, maxAccess, maxPython, maxComposite, currentTotal}；
+ *  无成绩批次（n=0）各 MAX 为 null（前端留空待手填） */
+router.get('/total-full-preview', authRequired, (req, res) => {
+  const aggStmt = db.prepare(`
+    SELECT COUNT(*) AS n, MAX(total) AS maxTotal,
+      MAX(choice) AS maxChoice, MAX(spreadsheet) AS maxSpreadsheet, MAX(access) AS maxAccess,
+      MAX(python) AS maxPython, MAX(composite) AS maxComposite
+    FROM scores WHERE batch_no = ?`);
+  const rows = db.prepare(`
+    SELECT * FROM paper_batches
+    WHERE choice_full = 0 AND spreadsheet_full = 0 AND access_full = 0
+      AND python_full = 0 AND composite_full = 0
+    ORDER BY id ASC`).all()
+    .map((row) => {
+      const agg = aggStmt.get(row.batch_no);
+      // 有成绩（n>0）时 MAX 结果数值化；无成绩（n=0）MAX 为 NULL → 统一 null（前端留空手填）
+      const num = (v) => (agg.n > 0 && v != null ? Number(v) : null);
+      return {
+        id: row.id,
+        batchNo: row.batch_no,
+        batchName: row.batch_name,
+        studentCount: agg.n,
+        maxTotal: num(agg.maxTotal),
+        maxChoice: num(agg.maxChoice),
+        maxSpreadsheet: num(agg.maxSpreadsheet),
+        maxAccess: num(agg.maxAccess),
+        maxPython: num(agg.maxPython),
+        maxComposite: num(agg.maxComposite),
+        currentTotal: Number(row.total_full),
+      };
+    });
+  res.json({ code: 0, data: { list: rows } });
+});
+
+/** 接口 12：POST /api/paper-batches/total-full-apply  一键设置总满分·执行
+ *  body: { updates: [{id, choiceFull, spreadsheetFull, accessFull, pythonFull, compositeFull}] }
+ *  ——五科满分以用户输入为准（弹窗可编辑，默认带出各科最高分），服务端求和写入 total_full（六列同事务）。
+ *  口径沿用：总满分恒等于五分项之和（与新增/编辑弹框自动计算一致，人工无需也不能单独设置总满分）。
+ *  守卫：目标批次五项分项须全为 0（分项未配置；含历史遗留「总满分已设、分项全 0」不一致行，可修复）；
+ *  任一分项 > 0 视为已配置，跳过不覆盖；每个分项须为非负数且总和>0；单事务执行，任一步异常整体回滚 500 */
+router.post('/total-full-apply', authRequired, (req, res) => {
+  const rawUpdates = req.body?.updates;
+  if (!Array.isArray(rawUpdates) || rawUpdates.length === 0) {
+    return res.status(400).json({ code: 400, message: '请先填写要设置的试卷批次' });
+  }
+  const FIELDS = [
+    ['choiceFull', 'choice_full'],
+    ['spreadsheetFull', 'spreadsheet_full'],
+    ['accessFull', 'access_full'],
+    ['pythonFull', 'python_full'],
+    ['compositeFull', 'composite_full'],
+  ];
+  // 解析并去重（同 id 取最后一次输入）
+  const map = new Map();
+  rawUpdates.forEach((u) => {
+    const id = Number(u?.id);
+    if (!Number.isInteger(id) || id <= 0) return;
+    const vals = {};
+    let allValid = true;
+    FIELDS.forEach(([key]) => {
+      const v = Number(u?.[key]);
+      // 分项允许 0（该科无成绩/不考），但不允许负数、非有限数、缺省 null
+      if (!Number.isFinite(v) || v < 0) allValid = false;
+      else vals[key] = v;
+    });
+    if (allValid) map.set(id, vals);
+  });
+  if (!map.size) {
+    return res.status(400).json({ code: 400, message: '无效的设置参数' });
+  }
+  const ids = Array.from(map.keys());
+  const placeholders = ids.map(() => '?').join(',');
+  const rows = db.prepare(`SELECT * FROM paper_batches WHERE id IN (${placeholders}) ORDER BY id ASC`).all(...ids);
+  if (!rows.length) {
+    return res.status(400).json({ code: 400, message: '未找到对应的试卷批次' });
+  }
+  const updateStmt = db.prepare(
+    `UPDATE paper_batches SET choice_full = ?, spreadsheet_full = ?, access_full = ?, python_full = ?, composite_full = ?,
+      total_full = ?, updated_at = datetime('now','localtime') WHERE id = ?`,
+  );
+  const skipped = [];
+  const failedBatches = [];
+  let applied = 0;
+  try {
+    db.transaction((list) => {
+      list.forEach((row) => {
+        const target = map.get(row.id);
+        // 分项已配置（任一 >0）的批次不参与批量设置（守卫口径与 preview 一致：分项全 0 才是未配置）
+        // 历史遗留「总满分已设、分项全 0」的不一致行不受此拦截，可被本接口修复（六列同时重写）
+        const subConfigured = FIELDS.some(([, col]) => Number(row[col]) > 0);
+        if (subConfigured) {
+          skipped.push({ batchNo: row.batch_no, reason: '五科分项已有配置（>0），不覆盖' });
+          return;
+        }
+        // 求和按两位舍入规避浮点长尾（与前端弹窗展示口径一致，前端输入已不限两位小数）
+        const sum = Math.round(FIELDS.reduce((acc, [key]) => acc + target[key], 0) * 100) / 100;
+        if (!(sum > 0)) {
+          skipped.push({ batchNo: row.batch_no, reason: '五科满分总和须为正数' });
+          return;
+        }
+        const info = updateStmt.run(
+          target.choiceFull, target.spreadsheetFull, target.accessFull, target.pythonFull, target.compositeFull,
+          sum, row.id,
+        );
+        if (info.changes > 0) applied += 1;
+        else failedBatches.push({ batchNo: row.batch_no, reason: '未产生任何变更' });
+      });
+    })(rows);
+  } catch (e) {
+    // 事务已整体回滚，数据保持原状
+    return res.status(500).json({ code: 500, message: `设置总满分失败，已整体回滚：${e.message}` });
+  }
+  res.json({
+    code: 0,
+    message: `设置完成：成功 ${applied} 个批次，跳过 ${skipped.length} 个批次`,
+    data: { applied, skipped: skipped.length, failedBatches, skippedDetail: skipped },
+  });
+});
+
+/** 接口 13：GET /api/paper-batches/class-options  班级下拉选项
+ *  class 为运行时派生字段（DB 无列），两来源取并集后去重升序：
+ *  ① paper_batches：批号首段 deriveClass（'16-xxx_1' → '16班'）
+ *  ② scores.class：成绩表真实班级值（本身即 X班 格式，可能存在无对应批次的成绩）
+ *  排序按班级数字前缀升序（5班 < 7班 < 16班），非数字开头排最后按字典序 */
+router.get('/class-options', authRequired, (req, res) => {
+  const batchRows = db.prepare('SELECT batch_no FROM paper_batches').all();
+  const scoreRows = db.prepare("SELECT DISTINCT class FROM scores WHERE class IS NOT NULL AND class != ''").all();
+  const set = new Set();
+  batchRows.forEach(({ batch_no }) => {
+    const c = deriveClass(batch_no);
+    if (c) set.add(c);
+  });
+  scoreRows.forEach(({ class: rawClass }) => {
+    const c = String(rawClass ?? '').trim();
+    if (c) set.add(c);
+  });
+  const classSortKey = (c) => {
+    const m = /^(\d+)/.exec(c);
+    return m ? Number(m[1]) : Number.MAX_SAFE_INTEGER;
+  };
+  const list = Array.from(set).sort((a, b) => classSortKey(a) - classSortKey(b) || a.localeCompare(b, 'zh'));
+  res.json({ code: 0, data: { list } });
+});
+
+/** 接口 1：GET /api/paper-batches（查询 + 分页 + 排序 + 筛选）
+ *  班级 class 为派生字段（DB 无列）：SQL 先按 name/batchNo 过滤取全集，
+ *  再在 SQL 外按 deriveClass(batch_no) === class 过滤、后分页，保证 total 与行集一致 */
 router.get('/', authRequired, (req, res) => {
-  const { name = '', batchNo = '', sortField = '', sortOrder = 'asc' } = req.query;
+  const { name = '', batchNo = '', class: clazz = '', sortField = '', sortOrder = 'asc' } = req.query;
   const where = [];
   const params = [];
   if (name) {
@@ -183,23 +333,28 @@ router.get('/', authRequired, (req, res) => {
   }
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
+  const allRows = db.prepare(`SELECT * FROM paper_batches ${whereSql} ORDER BY id ASC`).all(...params);
+  // 班级筛选：deriveClass(batch_no) 等值匹配，放在分页之前
+  const rows = clazz ? allRows.filter((r) => deriveClass(r.batch_no) === String(clazz)) : allRows;
+  const total = rows.length;
+
   let orderSql = 'ORDER BY id ASC';
   if (sortField && SORTABLE[sortField]) {
     const dir = String(sortOrder).toLowerCase() === 'desc' ? 'DESC' : 'ASC';
     orderSql = `ORDER BY ${SORTABLE[sortField]} ${dir}, id ASC`;
   }
+  const sorted = (total > 1 && orderSql !== 'ORDER BY id ASC')
+    ? db.prepare(`SELECT * FROM paper_batches WHERE id IN (${rows.map(() => '?').join(',')}) ${orderSql}`).all(...rows.map((r) => r.id))
+    : rows;
 
-  const total = db.prepare(`SELECT COUNT(*) AS c FROM paper_batches ${whereSql}`).get(...params).c;
   const raw = Number(req.query.pageSize);
   const size = Math.min(Math.max(raw > 0 ? raw : 25, 1), 500);
   // 页码防御：切换到更大每页条数时，越界页码自动收敛到最后一页
   const totalPages = Math.max(1, Math.ceil(total / size));
   const page = Math.min(Math.max(Number(req.query.page) || 1, 1), totalPages);
-  const rows = db.prepare(
-    `SELECT * FROM paper_batches ${whereSql} ${orderSql} LIMIT ? OFFSET ?`,
-  ).all(...params, size, (page - 1) * size);
+  const pageRows = sorted.slice((page - 1) * size, (page - 1) * size + size);
 
-  const list = rows.map(attachDerived);
+  const list = pageRows.map(attachDerived);
   res.json({ code: 0, data: { list, total, page, pageSize: size, totalPages } });
 });
 
@@ -358,9 +513,10 @@ router.post('/import', authRequired, upload.single('file'), (req, res) => {
   });
 });
 
-/** 接口 7：GET /api/paper-batches/export（导出当前筛选全集，不含分页） */
+/** 接口 7：GET /api/paper-batches/export（导出当前筛选全集，不含分页）
+ *  支持班级筛选：与列表接口同口径 deriveClass(batch_no) === class */
 router.get('/export', authRequired, (req, res) => {
-  const { name = '', batchNo = '' } = req.query;
+  const { name = '', batchNo = '', class: clazz = '' } = req.query;
   const where = [];
   const params = [];
   if (name) {
@@ -372,25 +528,31 @@ router.get('/export', authRequired, (req, res) => {
     params.push(`%${batchNo}%`);
   }
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
-  const rows = db.prepare(`SELECT * FROM paper_batches ${whereSql} ORDER BY id ASC`).all(...params);
+  const allRows = db.prepare(`SELECT * FROM paper_batches ${whereSql} ORDER BY id ASC`).all(...params);
+  const rows = clazz ? allRows.filter((r) => deriveClass(r.batch_no) === String(clazz)) : allRows;
 
-  // 导出表头：在「试卷批号」之后插入派生列「班级」（纯展示，导入模板仍为 13 列不含此列）
-  const exportHeaders = ['序号', '试卷批号', '班级', ...PAPER_BATCH_HEADERS.slice(2)];
+  // 导出表头：在「试卷批号」之后插入派生列「班级」；「试卷总满分/创建时间」提前到「试卷批次名称」之后
+  // 导入按 header 名取列、多余列（序号/班级）忽略，列序变化不影响导入兼容性
+  const exportHeaders = [
+    '序号', '试卷批号', '班级', '试卷批次名称', '试卷总满分', '创建时间',
+    '选择题满分', '电子表格满分', 'Access满分', 'Python满分', '综合题满分',
+    '默认合格占比(%)', '计算得出合格线', '备注',
+  ];
   const dataRows = rows.map((r, idx) => [
     idx + 1, // 序号
     r.batch_no,
     deriveClass(r.batch_no), // 班级（批号首段派生，无则 null → 单元格空）
     r.batch_name,
+    r.total_full, // 试卷总满分（提前）
+    deriveCreatedAt(r.batch_no), // 创建时间（提前）
     r.choice_full,
     r.spreadsheet_full,
     r.access_full,
     r.python_full,
     r.composite_full,
-    r.total_full,
     r.pass_ratio,
     computedPassLine(r.total_full, r.pass_ratio), // 计算得出合格线
     r.remark,
-    deriveCreatedAt(r.batch_no), // 创建时间
   ]);
 
   const XLSX = require('xlsx');

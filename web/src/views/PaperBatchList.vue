@@ -23,6 +23,23 @@
             />
           </el-select>
         </el-form-item>
+        <el-form-item label="班级">
+          <el-select
+            v-model="query.class"
+            placeholder="全部班级"
+            clearable
+            filterable
+            style="width: 200px"
+            :no-data-text="'暂无班级'"
+          >
+            <el-option
+              v-for="c in classOptions"
+              :key="c"
+              :label="c"
+              :value="c"
+            />
+          </el-select>
+        </el-form-item>
         <el-form-item>
           <el-button type="primary" :icon="Search" @click="handleSearch">查询</el-button>
           <el-button :icon="Refresh" @click="handleReset">重置</el-button>
@@ -57,6 +74,14 @@
             @click="handleBatchPassRatio"
           >
             一键修改合格占比
+          </el-button>
+          <el-button
+            type="primary"
+            :icon="MagicStick"
+            :loading="totalFullLoading"
+            @click="handleTotalFull"
+          >
+            一键设置总满分
           </el-button>
         </div>
         <div class="toolbar-actions">
@@ -175,8 +200,8 @@
             </el-form-item>
           </el-col>
           <el-col :span="8">
-            <el-form-item label="试卷总满分" prop="total_full">
-              <el-input-number v-model="form.total_full" :min="0" :max="5000" controls-position="right" style="width: 100%" @input="onTotalInput" />
+            <el-form-item label="试卷总满分(自动)" prop="total_full">
+              <el-input-number v-model="form.total_full" :min="0" :max="5000" controls-position="right" style="width: 100%" disabled />
             </el-form-item>
           </el-col>
           <el-col :span="12">
@@ -240,6 +265,60 @@
       </template>
     </el-dialog>
 
+    <!-- 一键设置总满分弹窗（仅列五科分项全 0 的未配置批次；五科满分默认带出各科最高分，可编辑；总满分自动求和） -->
+    <el-dialog v-model="totalFullVisible" title="一键设置总满分（仅未配置批次）" width="800px" destroy-on-close>
+      <el-alert
+        type="info"
+        :closable="false"
+        show-icon
+        title="仅为五科分项满分全为 0（未配置）的批次设置满分，分项已配置的批次不受影响；五科满分默认带出该批次各科最高分，可直接修改，试卷总满分自动按五科之和计算"
+        style="margin-bottom: 12px"
+      />
+      <el-table :data="totalFullRows" border stripe max-height="420">
+        <el-table-column prop="batchNo" label="批次批号" min-width="120" align="center" />
+        <el-table-column prop="studentCount" label="学生数" width="70" align="center" />
+        <el-table-column label="选择题满分" width="105" align="center">
+          <template #default="{ row }">
+            <el-input-number v-model="row.inputChoice" :min="0" :max="1000" :controls="false" placeholder="必填" style="width: 88px" />
+          </template>
+        </el-table-column>
+        <el-table-column label="电子表格满分" width="105" align="center">
+          <template #default="{ row }">
+            <el-input-number v-model="row.inputSpreadsheet" :min="0" :max="1000" :controls="false" placeholder="必填" style="width: 88px" />
+          </template>
+        </el-table-column>
+        <el-table-column label="Access满分" width="100" align="center">
+          <template #default="{ row }">
+            <el-input-number v-model="row.inputAccess" :min="0" :max="1000" :controls="false" placeholder="必填" style="width: 88px" />
+          </template>
+        </el-table-column>
+        <el-table-column label="Python满分" width="100" align="center">
+          <template #default="{ row }">
+            <el-input-number v-model="row.inputPython" :min="0" :max="1000" :controls="false" placeholder="必填" style="width: 88px" />
+          </template>
+        </el-table-column>
+        <el-table-column label="综合题满分" width="100" align="center">
+          <template #default="{ row }">
+            <el-input-number v-model="row.inputComposite" :min="0" :max="1000" :controls="false" placeholder="必填" style="width: 88px" />
+          </template>
+        </el-table-column>
+        <el-table-column label="总满分(自动)" width="100" align="center">
+          <template #default="{ row }">
+            <span :style="{ color: rowSum(row) > 0 ? '#67C23A' : '#909399', fontWeight: 600 }">{{ rowSum(row) || '—' }}</span>
+          </template>
+        </el-table-column>
+      </el-table>
+      <div style="margin-top: 10px; color: #909399; font-size: 13px">
+        共 {{ totalFullRows.length }} 个未配置批次（五科分项全 0）；五科之和大于 0 的行才会被设置
+      </div>
+      <template #footer>
+        <el-button @click="totalFullVisible = false">取消</el-button>
+        <el-button type="primary" :loading="totalFullApplying" :disabled="!validTotalFullRows.length" @click="confirmTotalFull">
+          确认设置（{{ validTotalFullRows.length }}）
+        </el-button>
+      </template>
+    </el-dialog>
+
     <!-- 列设置弹窗 -->
     <el-dialog v-model="columnDialogVisible" title="列设置" width="420px" destroy-on-close>
       <el-alert
@@ -283,12 +362,13 @@ import { computed, onMounted, reactive, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import {
   Search, Refresh, Plus, Upload, Download, Edit, Delete, UploadFilled, Setting, Top, Bottom, Document,
-  EditPen,
+  EditPen, MagicStick,
 } from '@element-plus/icons-vue';
 import {
   getPaperBatches, createPaperBatch, updatePaperBatch, deletePaperBatch,
   deletePaperBatchesBatch, importPaperBatches, downloadPaperBatchTemplate, exportPaperBatches,
   getPaperBatchMaxScores, syncPaperBatches, updatePassRatioBatch,
+  getClassOptions, getTotalFullPreview, applyTotalFull,
 } from '../api/paper-batches';
 import { getScoreBatchNos } from '../api/scores';
 
@@ -296,7 +376,7 @@ const loading = ref(false);
 const list = ref([]);
 const total = ref(0);
 
-const query = reactive({ name: '', batchNo: '' });
+const query = reactive({ name: '', batchNo: '', class: '' });
 const pagination = reactive({ page: 1, pageSize: 25 });
 const sort = reactive({ sortField: '', sortOrder: '' });
 
@@ -308,6 +388,17 @@ async function fetchBatchNoOptions() {
     batchNoOptions.value = res.data.batchNos || [];
   } catch {
     batchNoOptions.value = [];
+  }
+}
+
+// 班级下拉选项（批次派生班级 ∪ 成绩表班级，后端去重升序）
+const classOptions = ref([]);
+async function fetchClassOptions() {
+  try {
+    const res = await getClassOptions();
+    classOptions.value = res.data.list || [];
+  } catch {
+    classOptions.value = [];
   }
 }
 
@@ -327,16 +418,25 @@ const COLUMN_DEFS = [
   // 班级：批号首段（第一个 '-' 之前）派生的纯展示字段，由后端 attachDerived 下发；不可排序
   { key: 'class', label: '班级', width: 90, align: 'center', sortable: false },
   { key: 'batch_name', label: '试卷批次名称', minWidth: 140, align: 'center', sortable: true },
+  // 总满分 / 创建时间提前（第六轮需求：紧跟批次名称之后）
+  { key: 'total_full', label: '试卷总满分', width: 100, align: 'center', sortable: true },
+  { key: 'created_at', label: '创建时间', width: 120, align: 'center', sortable: true },
   { key: 'choice_full', label: '选择题满分', width: 100, align: 'center', sortable: true },
   { key: 'spreadsheet_full', label: '电子表格满分', width: 110, align: 'center', sortable: true },
   { key: 'access_full', label: 'Access满分', width: 100, align: 'center', sortable: true },
   { key: 'python_full', label: 'Python满分', width: 100, align: 'center', sortable: true },
   { key: 'composite_full', label: '综合题满分', width: 100, align: 'center', sortable: true },
-  { key: 'total_full', label: '试卷总满分', width: 100, align: 'center', sortable: true },
   { key: 'pass_ratio', label: '默认合格占比(%)', width: 120, align: 'center', sortable: true },
   { key: 'pass_line', label: '计算得出合格线', width: 120, align: 'center', sortable: false },
   { key: 'remark', label: '备注', minWidth: 160, align: 'left', sortable: false },
-  { key: 'created_at', label: '创建时间', width: 120, align: 'center', sortable: true },
+];
+
+// 旧版本默认列序（第六轮之前的 COLUMN_DEFS 顺序）：用于识别「用户从未自定义」的存量存档。
+// 存档键序与旧默认序完全一致 → 说明用户未做过任何移动/增删操作 → 按新版默认序重排；
+// 不一致 → 保留用户自定义顺序（新列已由 mergeSavedOrder 保证合理插入）。
+const LEGACY_DEFAULT_ORDER = [
+  'batch_no', 'class', 'batch_name', 'choice_full', 'spreadsheet_full', 'access_full',
+  'python_full', 'composite_full', 'total_full', 'pass_ratio', 'pass_line', 'remark', 'created_at',
 ];
 
 function getColDef(key) {
@@ -355,7 +455,17 @@ function loadColumnConfig() {
   const validKeys = new Set(COLUMN_DEFS.map((d) => d.key));
   const savedValid = saved.filter((s) => validKeys.has(s.key));
   const savedMap = new Map(savedValid.map((s) => [s.key, !!s.visible]));
-  const orderedKeys = mergeSavedOrder(savedValid.map((s) => s.key));
+  const savedKeys = savedValid.map((s) => s.key);
+  // 迁移：存档键序与旧默认序完全一致（用户从未自定义）→ 视为默认档，按新版默认序重排
+  const legacyStr = LEGACY_DEFAULT_ORDER.join(',');
+  if (savedKeys.join(',') === legacyStr) {
+    return COLUMN_DEFS.map((d) => ({
+      key: d.key,
+      visible: savedMap.has(d.key) ? savedMap.get(d.key) : true,
+    }));
+  }
+  // 其余情况（自定义过/部分隐藏）：保留用户存档相对顺序，缺失新列按 mergeSavedOrder 规则插入
+  const orderedKeys = mergeSavedOrder(savedKeys);
   return orderedKeys.map((k) => ({ key: k, visible: savedMap.has(k) ? savedMap.get(k) : true }));
 }
 
@@ -445,6 +555,7 @@ function handleSearch() {
 function handleReset() {
   query.name = '';
   query.batchNo = '';
+  query.class = '';
   pagination.page = 1;
   sort.sortField = '';
   sort.sortOrder = '';
@@ -520,6 +631,70 @@ async function handleBatchPassRatio() {
   }
 }
 
+// ---- 一键设置总满分（仅总满分为 0 的批次；五科满分可编辑，默认带出各科最高分，总满分自动求和）----
+const totalFullLoading = ref(false);     // 按钮 loading（预览请求期间）
+const totalFullApplying = ref(false);    // 弹窗确认按钮 loading（执行期间）
+const totalFullVisible = ref(false);
+const totalFullRows = ref([]);           // 弹窗表格数据（仅 0 值批次，含五科可编辑输入）
+
+// 弹窗行五科之和（null/undefined 视为未填按 0 计；去 precision 后输入不再强制两位小数，
+// 求和结果按两位舍入规避浮点长尾显示，如 0.1+0.2 → 0.3 而非 0.30000000000000004）
+const SUB_INPUT_KEYS = ['inputChoice', 'inputSpreadsheet', 'inputAccess', 'inputPython', 'inputComposite'];
+const rowSum = (row) => Math.round(SUB_INPUT_KEYS.reduce((acc, k) => acc + (Number(row[k]) || 0), 0) * 100) / 100;
+
+// 有效待设置行：五科之和 > 0 的行才提交
+const validTotalFullRows = computed(() => totalFullRows.value.filter((r) => rowSum(r) > 0));
+
+async function handleTotalFull() {
+  totalFullLoading.value = true;
+  try {
+    const res = await getTotalFullPreview();
+    // 预览接口仅返回五科分项全 0 的未配置批次；无未配置批次 → 直接提示，不弹窗
+    const rows = (res.data?.list) || [];
+    if (!rows.length) {
+      ElMessage.info('没有五科分项全 0 的未配置批次，无需设置');
+      return;
+    }
+    // 五科满分默认带出各科最高分（无成绩/该科无分的 max 为 null → 输入框留空待手填），用户可改
+    totalFullRows.value = rows.map((r) => ({
+      ...r,
+      inputChoice: r.maxChoice ?? null,
+      inputSpreadsheet: r.maxSpreadsheet ?? null,
+      inputAccess: r.maxAccess ?? null,
+      inputPython: r.maxPython ?? null,
+      inputComposite: r.maxComposite ?? null,
+    }));
+    totalFullVisible.value = true;
+  } finally {
+    totalFullLoading.value = false;
+  }
+}
+
+async function confirmTotalFull() {
+  if (!validTotalFullRows.value.length) return;
+  totalFullApplying.value = true;
+  try {
+    // 只提交五科输入值；total_full 由服务端按五科之和写入（口径与新增/编辑弹框一致）
+    const updates = validTotalFullRows.value.map((r) => ({
+      id: r.id,
+      choiceFull: Number(r.inputChoice) || 0,
+      spreadsheetFull: Number(r.inputSpreadsheet) || 0,
+      accessFull: Number(r.inputAccess) || 0,
+      pythonFull: Number(r.inputPython) || 0,
+      compositeFull: Number(r.inputComposite) || 0,
+    }));
+    const res = await applyTotalFull(updates);
+    const d = res.data || {};
+    ElMessage.success(`已更新 ${d.applied ?? 0} 个批次的满分${d.skipped ? `，跳过 ${d.skipped} 个` : ''}`);
+    totalFullVisible.value = false;
+    // 刷新列表与批号下拉（配置变化影响联动显示）
+    pagination.page = 1;
+    await Promise.all([fetchList(), fetchBatchNoOptions()]);
+  } finally {
+    totalFullApplying.value = false;
+  }
+}
+
 function handleSizeChange(size) {
   const maxPage = Math.max(1, Math.ceil(total.value / size));
   if (pagination.page > maxPage) pagination.page = maxPage;
@@ -565,8 +740,6 @@ const emptyForm = () => ({
 });
 
 const form = reactive(emptyForm());
-// 手改总满分后停止联动预填（直到下次打开弹窗重置）
-const manualTotal = ref(false);
 
 // 编辑弹窗预填请求竞态保护：每次 openDialog 自增，异步回来比对，旧弹窗/已关闭直接丢弃
 let prefillTokenSeq = 0;
@@ -575,18 +748,14 @@ const sumOfItems = computed(() =>
   Number(form.choice_full) + Number(form.spreadsheet_full) + Number(form.access_full)
   + Number(form.python_full) + Number(form.composite_full));
 
-// 联动预填：未手改总满分时，总满分自动跟随五项分项之和
+// 总满分自动联动：始终等于五项分项满分之和（新增/编辑弹框一致；分项预填回填后同样自动跟随）
 watch(sumOfItems, (v) => {
-  if (!manualTotal.value) form.total_full = v;
+  form.total_full = v;
 });
 
 // 只读合格线：ROUND(总满分*占比/100, 2)
 const computedPassLine = computed(() =>
   Math.round(Number(form.total_full) * Number(form.pass_ratio) / 100 * 100) / 100);
-
-function onTotalInput() {
-  manualTotal.value = true;
-}
 
 // 数值字段通用：必填且非负
 function numRule(label) {
@@ -621,7 +790,9 @@ const rules = {
 function openDialog(row) {
   editingId.value = row?.id || null;
   Object.assign(form, emptyForm(), row || {});
-  manualTotal.value = !!row?.id; // 编辑态默认保留已填总满分；新增态随分项联动
+  // 总满分自动联动初始化：watch 仅在 sumOfItems 变化时触发（前后连续打开两个分项和相同的批次会被跳过），
+  // 这里显式同步一次，保证任意打开/回显时刻 总满分恒等于当前五分项之和
+  form.total_full = sumOfItems.value;
   dialogVisible.value = true;
 
   // ---- 编辑分支：0 分项按同批号学生最高分预填（仅影响表单默认显示，不写库）----
@@ -660,12 +831,7 @@ function openDialog(row) {
               filled.push(f);
             }
           });
-          // 填充完成后，若 total_full 仍 === 0 → 自动填五项之和，使「分项之和=总满分」校验天然通过；
-          // total_full 非 0 保持原值（后续仍由现有第三方校验拦截，由用户处理）。
-          // manualTotal 保持 true 不变，不动原「手改总满分停止联动」机制。
-          if (Number(form.total_full) === 0) {
-            form.total_full = sumOfItems.value;
-          }
+          // 分项回填后，总满分由 sumOfItems watch 自动跟随重算，无需额外处理
           // 提示规则：有填充 → success；接口成功但 0 项都没填（全部 max=0）→ info
           if (filled.length > 0) {
             ElMessage.success(`已按该批次学生最高分预填 ${filled.length} 项 0 分项`);
@@ -903,7 +1069,7 @@ async function handleDownloadTemplate() {
 }
 
 async function exportList() {
-  const res = await exportPaperBatches({ name: query.name, batchNo: query.batchNo });
+  const res = await exportPaperBatches({ name: query.name, batchNo: query.batchNo, class: query.class });
   const url = URL.createObjectURL(new Blob([res]));
   const a = document.createElement('a');
   a.href = url;
@@ -915,6 +1081,7 @@ async function exportList() {
 onMounted(() => {
   fetchList();
   fetchBatchNoOptions();
+  fetchClassOptions();
 });
 </script>
 

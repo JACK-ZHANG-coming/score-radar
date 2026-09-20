@@ -47,3 +47,17 @@ export const syncPaperBatches = (execute) =>
 /** 一键修改合格占比：按当前筛选条件批量覆盖（body: { passRatio, name, batchNo }） */
 export const updatePassRatioBatch = (data) =>
   request.post('/paper-batches/batch-pass-ratio', data);
+
+/** 班级下拉选项（批次派生班级 ∪ 成绩表班级，去重升序） */
+export const getClassOptions = () =>
+  request.get('/paper-batches/class-options');
+
+/** 一键设置总满分·预览：仅返回总满分为 0（未配置）的批次及各自五科/总分的最高分 */
+export const getTotalFullPreview = () =>
+  request.get('/paper-batches/total-full-preview');
+
+/** 一键设置总满分·执行
+ *  body: { updates: [{id, choiceFull, spreadsheetFull, accessFull, pythonFull, compositeFull}] }
+ *  五科满分以用户输入为准（默认带出各科最高分），服务端求和写入 total_full，仅补 0 值批次 */
+export const applyTotalFull = (updates) =>
+  request.post('/paper-batches/total-full-apply', { updates });
