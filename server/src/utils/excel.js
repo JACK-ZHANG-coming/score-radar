@@ -58,23 +58,40 @@ function missingHeaders(headers, required) {
   return required.filter((r) => !set.has(r));
 }
 
-/** 规范化时间：2026-9-1 15:38 → 2026-09-01 15:38（空值返回 ''） */
+/**
+ * 规范化时间为 YYYY-MM-DD HH:mm（空值返回 ''，解析失败原样返回字符串，绝不伪造日期）：
+ * - 数字（Excel 序列号）走 SSF.parse_date_code；
+ * - 字符串支持 YYYY[-/.年]M[月]D[日]、可选中文星期中缀（星期一~星期日/周一~周日/礼拜一~礼拜日）、
+ *   日期与时间以任意空白或 T 分隔、时间 HH:mm(:ss) 秒丢弃、无时间部分补 00:00；
+ * - 月/日/时/分越界视为无效，原样返回。示例：2026/9/16 星期三 11:34:37 → 2026-09-16 11:34
+ */
 function normalizeTime(value) {
   const s = String(value ?? '').trim();
   if (!s) return '';
+  const p = (n) => String(n).padStart(2, '0');
   // Excel 序列号时间戳
   if (typeof value === 'number') {
     const d = XLSX.SSF.parse_date_code(value);
     if (d) {
-      const p = (n) => String(n).padStart(2, '0');
       return `${d.y}-${p(d.m)}-${p(d.d)} ${p(d.H)}:${p(d.M)}`;
     }
   }
-  const m = s.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?:[ T](\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?$/);
+  // 剥掉可选中文星期中缀，支持 YYYY[-/.年]M[-/.月]D[日]，日期与时间以空白/T 分隔（示例：2026/9/16 星期三 11:34:37）
+  const m = s.match(/^(\d{4})[-/.年](\d{1,2})[-/.月](\d{1,2})日?(?:\s*(?:星期|周|礼拜)[一二三四五六日天]?\s*)?(?:[\sT]+(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?$/);
   if (m) {
-    const p = (n) => String(n).padStart(2, '0');
-    const hm = m[4] ? ` ${p(m[4])}:${p(m[5])}` : ' 00:00';
-    return `${m[1]}-${p(m[2])}-${p(m[3])}${hm}`;
+    const year = Number(m[1]);
+    const month = Number(m[2]);
+    const day = Number(m[3]);
+    const hour = m[4] === undefined ? 0 : Number(m[4]);
+    const minute = m[5] === undefined ? 0 : Number(m[5]);
+    // 越界视为无效，原样返回（不伪造日期）
+    const isLeap = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+    const daysInMonth = [31, isLeap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    const valid = month >= 1 && month <= 12 && day >= 1 && day <= daysInMonth[month - 1]
+      && hour <= 23 && minute <= 59;
+    if (!valid) return s;
+    const hm = m[4] ? ` ${p(hour)}:${p(minute)}` : ' 00:00';
+    return `${m[1]}-${p(month)}-${p(day)}${hm}`;
   }
   return s;
 }
