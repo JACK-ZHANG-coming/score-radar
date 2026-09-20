@@ -121,12 +121,12 @@
             </template>
             <template v-else-if="col.key === 'total'">
               <span :style="{ fontWeight: 600, color: (row.total || 0) >= passLineOf(row) ? '#67c23a' : '#f56c6c' }">
-                {{ row.total }}
+                {{ row.total }}<correction-paren :value="row.correction_total" />
               </span>
             </template>
-            <template v-else-if="col.key === 'correction_score'">
-              <span v-if="row.correction_score === null || row.correction_score === undefined || row.correction_score === ''">—</span>
-              <span v-else>{{ row.correction_score }}</span>
+            <!-- 六科分数列：首次分数(订正分) 内联格式，无订正时括号留空，如 9(10)、0() -->
+            <template v-else-if="SUBJECT_KEYS.includes(col.key)">
+              {{ row[col.key] }}<correction-paren :value="row[CORRECTION_KEY_MAP[col.key]]" />
             </template>
             <template v-else-if="col.key === 'remark'">
               <el-tooltip
@@ -247,23 +247,86 @@
               <el-input-number v-model="form.composite" :min="0" :max="100" controls-position="right" style="width: 100%" />
             </el-form-item>
           </el-col>
-          <el-col :span="8">
-            <el-form-item label="总成绩" prop="total">
-              <el-input-number v-model="form.total" :min="0" :max="600" controls-position="right" style="width: 100%" />
-            </el-form-item>
-          </el-col>
-          <el-col :span="8">
-            <el-form-item label="二次订正分" prop="correction_score">
-              <el-input-number
-                v-model="form.correction_score"
-                :min="0"
-                :max="600"
-                controls-position="right"
-                placeholder="未订正"
-                style="width: 100%"
-              />
-            </el-form-item>
-          </el-col>
+        <el-col :span="8">
+          <el-form-item label="总成绩" prop="total">
+            <el-input-number v-model="form.total" :min="0" :max="600" controls-position="right" style="width: 100%" />
+          </el-form-item>
+        </el-col>
+      </el-row>
+      <el-divider content-position="left">订正分（选填，留空表示未订正）</el-divider>
+      <el-row :gutter="12">
+        <el-col :span="8">
+          <el-form-item label="选择题订正" prop="correction_choice">
+            <el-input-number
+              v-model="form.correction_choice"
+              :min="0"
+              :max="100"
+              controls-position="right"
+              placeholder="未订正"
+              style="width: 100%"
+            />
+          </el-form-item>
+        </el-col>
+        <el-col :span="8">
+          <el-form-item label="电子表格订正" prop="correction_spreadsheet">
+            <el-input-number
+              v-model="form.correction_spreadsheet"
+              :min="0"
+              :max="100"
+              controls-position="right"
+              placeholder="未订正"
+              style="width: 100%"
+            />
+          </el-form-item>
+        </el-col>
+        <el-col :span="8">
+          <el-form-item label="Access订正" prop="correction_access">
+            <el-input-number
+              v-model="form.correction_access"
+              :min="0"
+              :max="100"
+              controls-position="right"
+              placeholder="未订正"
+              style="width: 100%"
+            />
+          </el-form-item>
+        </el-col>
+        <el-col :span="8">
+          <el-form-item label="Python订正" prop="correction_python">
+            <el-input-number
+              v-model="form.correction_python"
+              :min="0"
+              :max="100"
+              controls-position="right"
+              placeholder="未订正"
+              style="width: 100%"
+            />
+          </el-form-item>
+        </el-col>
+        <el-col :span="8">
+          <el-form-item label="综合题订正" prop="correction_composite">
+            <el-input-number
+              v-model="form.correction_composite"
+              :min="0"
+              :max="100"
+              controls-position="right"
+              placeholder="未订正"
+              style="width: 100%"
+            />
+          </el-form-item>
+        </el-col>
+        <el-col :span="8">
+          <el-form-item label="总成绩订正" prop="correction_total">
+            <el-input-number
+              v-model="form.correction_total"
+              :min="0"
+              :max="600"
+              controls-position="right"
+              placeholder="未订正"
+              style="width: 100%"
+            />
+          </el-form-item>
+        </el-col>
           <el-col :span="24">
             <el-form-item label="备注" prop="remark">
               <el-input
@@ -297,6 +360,13 @@
         :closable="false"
         show-icon
         title="导入字段须与模板一致：序号、考号、姓名、学校、班级、考试状态、交卷时间、选择题、电子表格、Access、Python、综合题、总成绩"
+        style="margin-bottom: 8px"
+      />
+      <el-alert
+        type="warning"
+        :closable="false"
+        show-icon
+        title="文件名末尾含「订正」标记（如 _订正 / _订正2）时自动按订正导入处理：批号取剥离标记后的文件名，只与库内订正分取最高合并，不覆盖首次分数；不含「订正」的按首次分数导入。"
         style="margin-bottom: 16px"
       />
 
@@ -324,6 +394,13 @@
         <el-table-column label="文件名" min-width="200" show-overflow-tooltip>
           <template #default="{ row }">{{ row.name }}</template>
         </el-table-column>
+        <el-table-column label="类型" width="86" align="center">
+          <template #default="{ row }">
+            <el-tag :type="importKindOf(row.name).isCorrection ? 'warning' : 'success'" size="small">
+              {{ importKindOf(row.name).isCorrection ? '订正导入' : '首次分数' }}
+            </el-tag>
+          </template>
+        </el-table-column>
         <el-table-column label="大小" width="90" align="center">
           <template #default="{ row }">{{ formatSize(row.size) }}</template>
         </el-table-column>
@@ -332,7 +409,7 @@
             <el-input
               v-model="row.batchNo"
               size="small"
-              placeholder="必填，默认取文件名"
+              placeholder="必填，默认取文件名（订正文件已剥标记）"
               @input="validateImportFiles"
             />
           </template>
@@ -518,9 +595,31 @@ const COLUMN_DEFS = [
   { key: 'composite', label: '综合题', width: 90, align: 'center', sortable: true },
   { key: 'pass_status', label: '合格状态', width: 100, align: 'center', sortable: false },
   { key: 'total', label: '总成绩', width: 90, align: 'center', sortable: true },
-  { key: 'correction_score', label: '二次订正分', width: 100, align: 'center', sortable: true },
   { key: 'remark', label: '备注', minWidth: 160, align: 'left', sortable: false },
 ];
+
+// 六科分数列 key（列表内联渲染「首次分数(订正分)」）与对应的订正分字段映射
+const SUBJECT_KEYS = ['choice', 'spreadsheet', 'access', 'python', 'composite'];
+const CORRECTION_KEY_MAP = {
+  choice: 'correction_choice',
+  spreadsheet: 'correction_spreadsheet',
+  access: 'correction_access',
+  python: 'correction_python',
+  composite: 'correction_composite',
+  total: 'correction_total',
+};
+
+// 括号内联回显组件：值非空 → (值)，空/未订正 → ()；模板中以 <correction-paren> 使用
+const CorrectionParen = {
+  props: { value: { type: [Number, String], default: null } },
+  setup(props) {
+    return () => {
+      const v = props.value;
+      const inner = (v === null || v === undefined || v === '') ? '' : v;
+      return h('span', { class: 'correction-paren' }, `(${inner})`);
+    };
+  },
+};
 
 function getColDef(key) {
   return COLUMN_DEFS.find((d) => d.key === key) || { key, label: key, align: 'center' };
@@ -635,7 +734,6 @@ const SORT_FIELDS = {
   python: 'python',
   composite: 'composite',
   total: 'total',
-  correction_score: 'correctionScore',
 };
 
 function handleSortChange({ prop, order }) {
@@ -659,7 +757,8 @@ const formRef = ref(null);
 const emptyForm = () => ({
   serial_no: 1, exam_no: '', name: '', batch_no: '', school: 'hxzx', class: '', status: '已交卷',
   submit_time: '', choice: 0, spreadsheet: 0, access: 0, python: 0, composite: 0, total: 0,
-  correction_score: null, remark: '',
+  correction_choice: null, correction_spreadsheet: null, correction_access: null,
+  correction_python: null, correction_composite: null, correction_total: null, remark: '',
 });
 const form = reactive(emptyForm());
 
@@ -776,6 +875,19 @@ function isExcel(name) {
   return /\.(xlsx|xls)$/i.test(name || '');
 }
 
+// 导入模式判定（与后端 detectImportKind 同口径）：
+// 文件名（去扩展名）末尾含「订正N」标记 → 订正导入，批号 = 剥离标记（含紧邻分隔符）后的剩余部分
+const CORRECTION_MARK_RE = /(_?-?订正\d*)$/;
+function importKindOf(name) {
+  const base = (name || '').replace(/\.[^.]+$/, '');
+  const m = base.match(CORRECTION_MARK_RE);
+  if (!m || !m[0]) return { isCorrection: false, batchNo: base };
+  const stripped = base.slice(0, base.length - m[0].length).replace(/[-_]$/, '');
+  if (!stripped) return { isCorrection: false, batchNo: base };
+  return { isCorrection: true, batchNo: stripped };
+}
+const defaultBatchNoOf = (name) => importKindOf(name).batchNo;
+
 // 选择文件：追加到列表，校验类型/大小/空文件/重复，批号默认取文件名（去扩展名）
 function handleFilesChange(file) {
   const raw = file.raw;
@@ -805,7 +917,9 @@ function handleFilesChange(file) {
     name,
     size: raw.size,
     raw,
-    batchNo: name.replace(/\.[^.]+$/, ''), // 默认以文件名作为试卷批号
+    // 默认以文件名（去扩展名）作为试卷批号；订正文件名（末尾含「订正N」标记）
+    // 剥掉标记后的剩余部分作为目标批号，后端 importOneFile 同口径二次判定
+    batchNo: defaultBatchNoOf(name),
   });
   validateImportFiles();
 }
@@ -1007,6 +1121,12 @@ onMounted(() => {
   color: var(--el-text-color-secondary);
 }
 /* 备注：单行截断，悬浮提示展示完整内容 */
+/* 订正括号：内联在首次分数后，视觉弱化为次要信息（h() 渲染组件需 :deep 穿透） */
+:deep(.correction-paren) {
+  color: var(--el-text-color-secondary);
+  margin-left: 2px;
+  font-weight: 400;
+}
 .remark-cell {
   display: inline-block;
   max-width: 100%;

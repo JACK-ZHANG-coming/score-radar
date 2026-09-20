@@ -86,11 +86,11 @@ const getBatchesOfClass = db.prepare(`
   WHERE p.batch_no IN (SELECT DISTINCT batch_no FROM scores WHERE class = ? AND batch_no != '')
 `);
 
-/** 取某班级全部成绩记录（含五科分数与订正分） */
+/** 取某班级全部成绩记录（含五科分数与订正分；订正分=总成绩订正 correction_total） */
 const getScoresOfClass = db.prepare(`
   SELECT name, exam_no AS examNo, batch_no AS batchNo, total,
          choice, spreadsheet, access, python, composite,
-         correction_score AS correctionScore, submit_time AS submitTime
+         correction_total AS correctionScore, submit_time AS submitTime
   FROM scores
   WHERE class = ? AND batch_no != ''
 `);

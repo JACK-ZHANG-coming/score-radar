@@ -101,6 +101,35 @@ if (!scoreCols.get('correction_score').c) {
   console.log('[db] scores 表已新增 correction_score（二次订正分）字段');
 }
 
+// ── 六科订正分：每科独立列（选择/电子表格/Access/Python/综合题/总成绩）──
+// 旧 correction_score（总分订正）语义并入 correction_total：仅在六列补充的当轮做一次性
+// 回填（旧列历史值大多为 NULL；回填后旧列即废弃不读写——不 DROP，避免影响线上旧实例回滚）。
+// 回填仅在「本轮补列」时执行一次：日常启动 correction_total 列已存在 → 跳过，用户编辑
+// 清空订正后重启服务不会被旧值复活。
+const CORRECTION_COLS = [
+  ['correction_choice', '选择题订正分'],
+  ['correction_spreadsheet', '电子表格订正分'],
+  ['correction_access', 'Access订正分'],
+  ['correction_python', 'Python订正分'],
+  ['correction_composite', '综合题订正分'],
+  ['correction_total', '总成绩订正分'],
+];
+let addedCorrectionCols = 0;
+CORRECTION_COLS.forEach(([col]) => {
+  if (!scoreCols.get(col).c) {
+    db.exec(`ALTER TABLE scores ADD COLUMN ${col} REAL`);
+    addedCorrectionCols += 1;
+  }
+});
+// 仅在「本轮有新增加列」（即迁移启动那一次）时回填一次；此后每次启动 added=0 静默跳过，
+// 用户编辑清空订正后重启服务不会被旧值复活。
+if (addedCorrectionCols > 0) {
+  const bak = db.prepare(
+    'UPDATE scores SET correction_total = correction_score WHERE correction_total IS NULL AND correction_score IS NOT NULL',
+  ).run();
+  console.log(`[db] scores 表已新增六科订正分列${bak.changes ? `，历史总分订正值已回填 ${bak.changes} 行至 correction_total` : ''}`);
+}
+
 // 存量试卷批号冷启动：为 scores 中已存在的批号补占位行（分项0/总0/占比60，batch_name 以批号兜底）
 // 幂等：仅在该批号在 paper_batches 不存在时插入；多次启动 N 递减为 0，不再打印。
 // 说明：此处直接内联 SQL，避免 db.js 在文件末尾 require paperBatch 造成的循环依赖。

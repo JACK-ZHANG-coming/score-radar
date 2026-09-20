@@ -49,7 +49,12 @@ const SORTABLE = {
   composite: 'composite',
   total: 'total',
   batchNo: 'batch_no',
-  correctionScore: 'correction_score',
+  correctionChoice: 'correction_choice',
+  correctionSpreadsheet: 'correction_spreadsheet',
+  correctionAccess: 'correction_access',
+  correctionPython: 'correction_python',
+  correctionComposite: 'correction_composite',
+  correctionTotal: 'correction_total',
 };
 
 /** GET /api/scores  多条件搜索 + 排序 + 分页
@@ -156,6 +161,16 @@ router.get('/template', authRequired, (req, res) => {
   res.send(buf);
 });
 
+/** 六科订正分公共转换：null/''/undefined → NULL（未订正），可转数字 → 数值，否则 NULL */
+function nullableNum(v) {
+  if (v === null || v === '' || v === undefined) return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** 订正导入合并键：六科订正分，与新导入值逐科「取最高」；库值/新值任一为空且新值空白 → 保持库值 */
+const CORRECTION_COLS = ['correction_choice', 'correction_spreadsheet', 'correction_access', 'correction_python', 'correction_composite', 'correction_total'];
+
 function rowToScore(body) {
   return {
     serial_no: body.serial_no === '' || body.serial_no === undefined || body.serial_no === null
@@ -173,10 +188,14 @@ function rowToScore(body) {
     python: toNum(body.python),
     composite: toNum(body.composite),
     total: toNum(body.total),
-    // correction_score：null/''/undefined → NULL（未订正），可转数字 → 数值
-    correction_score:
-      body.correction_score === null || body.correction_score === '' || body.correction_score === undefined
-        ? null : Number(body.correction_score),
+    // 六科订正分：null/''/undefined → NULL（未订正），可转数字 → 数值
+    correction_choice: nullableNum(body.correction_choice),
+    correction_spreadsheet: nullableNum(body.correction_spreadsheet),
+    correction_access: nullableNum(body.correction_access),
+    correction_python: nullableNum(body.correction_python),
+    correction_composite: nullableNum(body.correction_composite),
+    correction_total: nullableNum(body.correction_total),
+    // 备注：POST/PUT 的 INSERT/UPDATE 语句均绑定 @remark，缺失会导致 better-sqlite3 RangeError
     remark: toStr(body.remark),
   };
 }
@@ -205,16 +224,22 @@ router.post('/', authRequired, (req, res) => {
   if (cfgErr) return res.status(400).json({ code: 400, message: cfgErr });
 
   const COLS = `serial_no, exam_no, name, batch_no, school, class, status, submit_time,
-      choice, spreadsheet, access, python, composite, total, correction_score, remark`;
+      choice, spreadsheet, access, python, composite, total,
+      correction_choice, correction_spreadsheet, correction_access, correction_python, correction_composite, correction_total,
+      remark`;
   const VALS = `@serial_no, @exam_no, @name, @batch_no, @school, @class, @status, @submit_time,
-      @choice, @spreadsheet, @access, @python, @composite, @total, @correction_score, @remark`;
+      @choice, @spreadsheet, @access, @python, @composite, @total,
+      @correction_choice, @correction_spreadsheet, @correction_access, @correction_python, @correction_composite, @correction_total,
+      @remark`;
 
   if (dup && req.body.overwrite) {
     db.prepare(`
       UPDATE scores SET serial_no=@serial_no, exam_no=@exam_no, name=@name, batch_no=@batch_no,
         school=@school, class=@class, status=@status, submit_time=@submit_time, choice=@choice,
         spreadsheet=@spreadsheet, access=@access, python=@python, composite=@composite, total=@total,
-        correction_score=@correction_score, remark=@remark,
+        correction_choice=@correction_choice, correction_spreadsheet=@correction_spreadsheet,
+        correction_access=@correction_access, correction_python=@correction_python,
+        correction_composite=@correction_composite, correction_total=@correction_total, remark=@remark,
         updated_at=datetime('now','localtime')
       WHERE id=@id
     `).run({ ...s, id: dup.id });
@@ -259,7 +284,9 @@ router.put('/:id', authRequired, (req, res) => {
         UPDATE scores SET serial_no=@serial_no, exam_no=@exam_no, name=@name, batch_no=@batch_no,
           school=@school, class=@class, status=@status, submit_time=@submit_time, choice=@choice,
           spreadsheet=@spreadsheet, access=@access, python=@python, composite=@composite, total=@total,
-          correction_score=@correction_score, remark=@remark,
+          correction_choice=@correction_choice, correction_spreadsheet=@correction_spreadsheet,
+          correction_access=@correction_access, correction_python=@correction_python,
+          correction_composite=@correction_composite, correction_total=@correction_total, remark=@remark,
           updated_at=datetime('now','localtime')
         WHERE id=@id
       `).run({ ...s, id: dup.id });
@@ -272,7 +299,9 @@ router.put('/:id', authRequired, (req, res) => {
     UPDATE scores SET serial_no=@serial_no, exam_no=@exam_no, name=@name, batch_no=@batch_no,
       school=@school, class=@class, status=@status, submit_time=@submit_time, choice=@choice,
       spreadsheet=@spreadsheet, access=@access, python=@python, composite=@composite, total=@total,
-      correction_score=@correction_score, remark=@remark,
+      correction_choice=@correction_choice, correction_spreadsheet=@correction_spreadsheet,
+      correction_access=@correction_access, correction_python=@correction_python,
+      correction_composite=@correction_composite, correction_total=@correction_total, remark=@remark,
       updated_at=datetime('now','localtime')
     WHERE id=@id
   `).run({ ...s, id });
@@ -304,29 +333,120 @@ router.delete('/:id', authRequired, (req, res) => {
 /** 导入用写入语句（模块级预编译，多文件导入复用） */
 const importInsert = db.prepare(`
   INSERT INTO scores (serial_no, exam_no, name, batch_no, school, class, status, submit_time,
-    choice, spreadsheet, access, python, composite, total, correction_score, remark)
+    choice, spreadsheet, access, python, composite, total,
+    correction_choice, correction_spreadsheet, correction_access, correction_python, correction_composite, correction_total,
+    remark)
   VALUES (@serial_no, @exam_no, @name, @batch_no, @school, @class, @status, @submit_time,
-    @choice, @spreadsheet, @access, @python, @composite, @total, @correction_score, @remark)
+    @choice, @spreadsheet, @access, @python, @composite, @total,
+    @correction_choice, @correction_spreadsheet, @correction_access, @correction_python, @correction_composite, @correction_total,
+    @remark)
 `);
 const importUpdate = db.prepare(`
   UPDATE scores SET serial_no=@serial_no, exam_no=@exam_no, name=@name, batch_no=@batch_no, school=@school,
     class=@class, status=@status, submit_time=@submit_time, choice=@choice, spreadsheet=@spreadsheet,
     access=@access, python=@python, composite=@composite, total=@total,
-    correction_score=@correction_score, remark=@remark,
+    correction_choice=@correction_choice, correction_spreadsheet=@correction_spreadsheet,
+    correction_access=@correction_access, correction_python=@correction_python,
+    correction_composite=@correction_composite, correction_total=@correction_total, remark=@remark,
     updated_at=datetime('now','localtime')
   WHERE id=@id
 `);
-const findByBatchName = db.prepare('SELECT id, correction_score, remark FROM scores WHERE batch_no = ? AND name = ?');
+const findByBatchName = db.prepare(`
+  SELECT id, correction_choice, correction_spreadsheet, correction_access, correction_python,
+    correction_composite, correction_total, remark
+  FROM scores WHERE batch_no = ? AND name = ?
+`);
+/** 订正导入专用：仅更新六科订正分列，其余字段（首次分数/备注等）一律不动 */
+const updateCorrections = db.prepare(`
+  UPDATE scores SET
+    correction_choice=@correction_choice,
+    correction_spreadsheet=@correction_spreadsheet,
+    correction_access=@correction_access,
+    correction_python=@correction_python,
+    correction_composite=@correction_composite,
+    correction_total=@correction_total,
+    updated_at=datetime('now','localtime')
+  WHERE id=@id
+`);
+
+/**
+ * 从文件名解析订正标记：形如「5-电子表格1-2_1_订正2」 → isCorrection=true，batchNoFromName=「5-电子表格1-2_1」；
+ * 无订正标记（不含「订正」二字）或标记后无剩余部分 → 判定为首次分数导入，batchNoFromName=全名。
+ * 识别口径：文件名（去扩展名）末尾存在（_?-?订正N?）片段；紧邻标记前的「_」「-」分隔符一并剥离。
+ */
+const CORRECTION_MARK_RE = /(_?-?订正\d*)$/;
+
+/**
+ * 修复 multipart 上传文件名的中文乱码（mojibake）。
+ * 现状链路：浏览器把 filename 按原始 UTF-8 字节写入报文 → busboy 1.x 未设
+ * defParamCharset 时对头部按 latin1 单字节切分 → req.file.originalname 对中文文件名
+ * 呈「每字节一字」乱码（如「订正」→ è®¢æ­£）。把该字符串按 latin1 还原字节序列再转
+ * UTF-8 即可无损修复；无法还原（出现 U+FFFD）或本就不含高位字节（ASCII/已正确）时
+ * 保持原值。极少数双重编码（修复一轮后仍含高位字节）最多再修两轮，直至稳定。
+ */
+function fixUploadName(name) {
+  let s = String(name || '');
+  for (let i = 0; i < 3; i += 1) {
+    if (!s || !/[\u0080-\u00ff]/.test(s)) return s;
+    const repaired = Buffer.from(s, 'latin1').toString('utf8');
+    if (repaired === s || repaired.includes('\uFFFD')) return s;
+    s = repaired;
+  }
+  return s;
+}
+
+/** 判定导入模式：返回 { isCorrection: boolean, batchNoFromName: string } */
+function detectImportKind(fileName) {
+  const base = path.parse(fileName || '').name;
+  const m = base.match(CORRECTION_MARK_RE);
+  if (!m || !m[0]) return { isCorrection: false, batchNoFromName: base };
+  // 去除末尾「订正N」标记后剩余部分即目标批次号；标记前紧邻的「_」「-」一并剥离
+  const stripped = base.slice(0, base.length - m[0].length).replace(/[-_]$/, '');
+  if (!stripped) return { isCorrection: false, batchNoFromName: base };
+  return { isCorrection: true, batchNoFromName: stripped };
+}
+
+/**
+ * 订正合并：新导入值与库中既有订正值逐科取最高，库值/新值均为 NULL/空白单元格时保持不动。
+ * 规则（空白即「本行未提供订正值」）：
+ *   - 新值空 → 保持库值（包括库值也为空的情形）
+ *   - 新值非空 → max(库值 || 0, 新值)
+ * 返回 null（未提供任何订正数据时视为空括号语义）或六个字段的对象。
+ */
+function mergeCorrections(existing, row) {
+  const incoming = {
+    correction_choice: nullableNum(row['选择题']),
+    correction_spreadsheet: nullableNum(row['电子表格']),
+    correction_access: nullableNum(row['Access']),
+    correction_python: nullableNum(row['Python']),
+    correction_composite: nullableNum(row['综合题']),
+    correction_total: nullableNum(row['总成绩']),
+  };
+  const merged = {};
+  let hasIncoming = false;
+  CORRECTION_COLS.forEach((col) => {
+    const dbVal = existing ? existing[col] : null;
+    const inVal = incoming[col];
+    if (inVal !== null) hasIncoming = true;
+    merged[col] = inVal === null ? dbVal : Math.max(Number(dbVal) || 0, inVal);
+  });
+  return { merged, hasIncoming };
+}
 
 /**
  * 导入单个 Excel 文件（解析 → 表头校验 → 重复预扫描 → 事务写入）。
  * 复用原单文件导入的全部校验与写入口径，多文件导入时逐文件调用、各自独立事务。
- * @param {{buffer: Buffer}} file 上传文件
- * @param {string} batchNo 该文件关联的试卷批号
+ * 导入模式由文件名自动判定（detectImportKind）：
+ *   - 首次分数导入：走原有全量写入逻辑（同批号+姓名存在时覆盖/新增，校验满分配置）；
+ *   - 订正导入：仅把导入分数合并进六科订正分（逐科与库值取最高），不动首次分数六列，
+ *     不存在的学生跳过，不校验满分配置（订正分可能低——「未订正到满分」不是非法值）。
+ * @param {{buffer: Buffer, originalname: string}} file 上传文件
+ * @param {string} batchNo 该文件关联的试卷批号（路由层已剥离订正标记）
  * @param {boolean} overwrite 是否覆盖同「批号+姓名」的既有记录
  * @returns {{ok:boolean, inserted:number, updated:number, errors:string[], message:string, conflictCount?:number, conflict?:boolean}}
  */
 function importOneFile(file, batchNo, overwrite) {
+  const { isCorrection } = detectImportKind(fixUploadName(file.originalname || ''));
   let rows;
   try {
     rows = parseSheet(file.buffer);
@@ -340,6 +460,54 @@ function importOneFile(file, batchNo, overwrite) {
   if (missing.length) {
     const msg = `缺少必需列：${missing.join('、')}`;
     return { ok: false, inserted: 0, updated: 0, errors: [msg], message: msg };
+  }
+
+  // ── 订正导入分支：仅合并订正分，不走首次导入的冲突预扫描/满分校验/单条写入流程 ──
+  if (isCorrection) {
+    const errors = [];
+    let updated = 0;
+    let skipped = 0;
+    const tx = db.transaction(() => {
+      rows.forEach((row, i) => {
+        const line = i + 2;
+        const name = toStr(row['姓名']);
+        if (!name) {
+          skipped += 1;
+          errors.push(`第 ${line} 行：姓名为空，已跳过`);
+          return;
+        }
+        const exists = findByBatchName.get(batchNo, name);
+        if (!exists) {
+          skipped += 1;
+          if (errors.length < 100) errors.push(`第 ${line} 行：批次「${batchNo}」下不存在学生「${name}」，已跳过（订正导入不新增记录）`);
+          return;
+        }
+        const { merged, hasIncoming } = mergeCorrections(exists, row);
+        // 本行六科全部空：没有携带任何订正数值 → 保持不动
+        if (!hasIncoming) {
+          skipped += 1;
+          if (errors.length < 100) errors.push(`第 ${line} 行：「${name}」本行无订正数值，保持不动`);
+          return;
+        }
+        // 逐科取最高后与库值完全一致（本次订正值均不高于已保存订正分）→ 保持不动
+        const changed = CORRECTION_COLS.some((c) => merged[c] !== exists[c]);
+        if (!changed) {
+          skipped += 1;
+          if (errors.length < 100) errors.push(`第 ${line} 行：「${name}」本次订正值不高于已保存订正分，保持不动`);
+          return;
+        }
+        updateCorrections.run({ ...merged, id: exists.id });
+        updated += 1;
+      });
+    });
+    tx();
+    return {
+      ok: true,
+      inserted: 0,
+      updated,
+      errors,
+      message: `订正导入：更新 ${updated} 条${skipped ? `，跳过 ${skipped} 条` : ''}${errors.length ? `，明细 ${errors.length} 条` : ''}`,
+    };
   }
 
   // 预扫描：统计会与「试卷批号+姓名」冲突的行（现有库记录或文件内重复）
@@ -393,8 +561,13 @@ function importOneFile(file, batchNo, overwrite) {
         python: toNum(row['Python']),
         composite: toNum(row['综合题']),
         total: toNum(row['总成绩']),
-        // 模板不含备注/二次订正分：覆盖已有行时保留库中原值，新行用默认（NULL / ''）
-        correction_score: exists ? exists.correction_score : null,
+        // 模板不含备注/六科订正分：覆盖已有行时保留库中原值，新行用默认（NULL / ''）
+        correction_choice: exists ? exists.correction_choice : null,
+        correction_spreadsheet: exists ? exists.correction_spreadsheet : null,
+        correction_access: exists ? exists.correction_access : null,
+        correction_python: exists ? exists.correction_python : null,
+        correction_composite: exists ? exists.correction_composite : null,
+        correction_total: exists ? exists.correction_total : null,
         remark: exists ? exists.remark : '',
       };
       // 按所选试卷批号配置校验分数合法性（仅已配置批号生效，否则跳过）
@@ -436,8 +609,9 @@ function importOneFile(file, batchNo, overwrite) {
  */
 router.post('/import', authRequired, upload.single('file'), (req, res) => {
   if (!req.file) return res.status(400).json({ code: 400, message: '请选择 Excel 文件' });
-  // 试卷批号：手动输入优先，否则取文件名（去扩展名）
-  const fallback = path.parse(req.file.originalname).name;
+  // 试卷批号：手动输入优先，否则取文件名（去扩展名）；订正文件名（含「订正N」结尾标记）
+  // 的回退批号需剥掉末尾订正标记，取剩余部分为目标批次号（如 5-电子表格1-2_1_订正2 → 5-电子表格1-2_1）
+  const fallback = detectImportKind(fixUploadName(req.file.originalname)).batchNoFromName;
   const batchNo = toStr(req.body.batchNo) || fallback;
   const overwrite = String(req.body.overwrite || '') === 'true';
 
@@ -487,8 +661,10 @@ router.post('/import-multi', authRequired, upload.array('files', 20), (req, res)
   let skipped = 0;
 
   files.forEach((file, idx) => {
-    const fileName = file.originalname || '';
-    const fallback = path.parse(fileName).name;
+    // 文件名先修复 multipart 编码乱码，再用于回退批号推导与响应明细（前端可见正确中文）
+    const fileName = fixUploadName(file.originalname || '');
+    // 订正文件名的回退批号需剥掉末尾「订正N」标记（与 /import 单文件口径一致）
+    const fallback = detectImportKind(fileName).batchNoFromName;
     const batchNo = toStr(batchNos[idx]) || fallback;
     const r = importOneFile(file, batchNo, overwrite);
     if (r.ok) {
