@@ -1,12 +1,28 @@
 const XLSX = require('xlsx');
 
-/** 修复 GBK 双重编码乱码：如 "ÐòºÅ" → "序号"（仅处理含 Latin-1 高位字符的字符串） */
+/**
+ * 修复表头/单元格中文乱码。仅处理含 Latin-1 高位字符（\u0080-\u00ff）的字符串，两种形态：
+ * A.「UTF-8 被按单字节切开」：SheetJS 对无 BOM 文本（TSV/CSV 伪装 xlsx）无 codepage 时
+ *    按 latin1 切字节，UTF-8 中文变成每个字节一字（"序号"→"åºå·"）。
+ *    修复 = 字节按严格 UTF-8 解码（fatal，多字节序列非法即抛错）。
+ *    必须让 UTF-8 先行：UTF-8 解码有结构校验，能可靠自证；GBK 对几乎任意字节都能
+ *    解出"合法"汉字（本形态走 GBK 会解出二次乱码"搴忓彿"，不可逆）。
+ * B.「GBK 双重编码」：历史文件形态（"序号"→"ÐòºÅ"，字节 D0 F2 BA C5 不是合法 UTF-8
+ *    序列 → 形态 A 抛错兜底到 GBK），修复 = 字节按 GBK 解码。
+ */
 const gbkDecoder = new TextDecoder('gbk');
+const utf8StrictDecoder = new TextDecoder('utf-8', { fatal: true });
 function fixEncoding(value) {
   if (typeof value !== 'string') return value;
   if (!/[\u0080-\u00ff]/.test(value)) return value;
+  const bytes = Buffer.from(value, 'latin1');
+  // 形态 A：严格 UTF-8 还原（非法序列抛 TypeError → 落到形态 B）
   try {
-    const fixed = gbkDecoder.decode(Buffer.from(value, 'latin1'));
+    return utf8StrictDecoder.decode(bytes);
+  } catch { /* 不是合法 UTF-8，继续尝试 GBK */ }
+  // 形态 B：GBK 还原（ TextDecoder 默认把不可解字节替换为 U+FFFD，含替换符则视为失败）
+  try {
+    const fixed = gbkDecoder.decode(bytes);
     if (!fixed.includes('\uFFFD')) return fixed;
   } catch { /* ignore */ }
   return value;
