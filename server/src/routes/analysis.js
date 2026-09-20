@@ -65,13 +65,18 @@ router.get('/classes', authRequired, (req, res) => {
 /**
  * 取某班级涉及的考试批次（来自成绩数据，非全量批次表），按考试日期升序。
  * 排序口径：created_at（交卷日期众数派生）→ 该批次最早交卷日期 → 批号兜底。
- * 仅返回已配置批号（total_full > 0）用于合格判定；未配置批次（占位行）单独标记。
+ * 返回全部涉及批次：configured（当前判定口径的满分 > 0）用于合格判定；未配置批次单独标记。
  */
 const getBatchesOfClass = db.prepare(`
   SELECT
     p.batch_no       AS batchNo,
     p.batch_name     AS batchName,
     p.total_full     AS totalFull,
+    p.choice_full     AS choiceFull,
+    p.spreadsheet_full AS spreadsheetFull,
+    p.access_full     AS accessFull,
+    p.python_full     AS pythonFull,
+    p.composite_full  AS compositeFull,
     p.pass_ratio     AS passRatio,
     p.created_at     AS createdAt,
     (SELECT COUNT(*) FROM scores s WHERE s.batch_no = p.batch_no) AS studentCount,
@@ -81,38 +86,65 @@ const getBatchesOfClass = db.prepare(`
   WHERE p.batch_no IN (SELECT DISTINCT batch_no FROM scores WHERE class = ? AND batch_no != '')
 `);
 
-/** 取某班级全部成绩记录（含订正分） */
+/** 取某班级全部成绩记录（含五科分数与订正分） */
 const getScoresOfClass = db.prepare(`
   SELECT name, exam_no AS examNo, batch_no AS batchNo, total,
+         choice, spreadsheet, access, python, composite,
          correction_score AS correctionScore, submit_time AS submitTime
   FROM scores
   WHERE class = ? AND batch_no != ''
 `);
 
 /**
+ * 不及格判定口径（页面「不及格类别」下拉）：
+ * scoreCol = scores 成绩列；fullCol = paper_batches 满分列。
+ * 单科口径下批次「已配置」= 该科满分 > 0（其余科目的配置不参与）。
+ */
+const SUBJECTS = {
+  total:       { label: '总成绩',   scoreKey: 'total',      fullKey: 'totalFull' },
+  choice:      { label: '选择题',   scoreKey: 'choice',     fullKey: 'choiceFull' },
+  spreadsheet: { label: '电子表格', scoreKey: 'spreadsheet', fullKey: 'spreadsheetFull' },
+  access:      { label: 'Access',   scoreKey: 'access',     fullKey: 'accessFull' },
+  python:      { label: 'Python',   scoreKey: 'python',     fullKey: 'pythonFull' },
+  composite:   { label: '综合题',   scoreKey: 'composite',  fullKey: 'compositeFull' },
+};
+
+/**
  * GET /api/analysis/failures  某班级的「不及格追踪矩阵」
- * query: class（必填）
+ * query: class（必填）、subject（不及格类别：total/choice/spreadsheet/access/python/composite，默认 total）
+ *        ratio（不及格比例判定：页面下拉 60/70/80，后端宽容接收 0<x<=100 的数，非法回退 60）
  * 行 = 学生，列 = 考试批次（按时间先后升序），单元格 = 不及格记录
+ * 判定口径：所选科目得分 < ROUND(该科目满分 × ratio / 100, 2)；该科满分 = 0（未配置）跳过判定。
  * 单元格状态：
- *   corrected  已二次订正通过（correction_score >= 合格线）
- *   laterPass  该生在后续批次中已及格
+ *   corrected  已二次订正通过（仅总成绩口径判定：correction_score >= 合格线）
+ *   laterPass  该生在后续批次中该科目已及格
  *   fail       仍未处理
  */
 router.get('/failures', authRequired, (req, res) => {
   const clazz = String(req.query.class || '').trim();
   if (!clazz) return res.status(400).json({ code: 400, message: '班级参数不能为空' });
 
+  // 判定口径参数（非法值回退默认，不报错：等效于「总成绩 + 60%」）
+  const subjectKeyRaw = String(req.query.subject || 'total');
+  const subj = SUBJECTS[subjectKeyRaw] || SUBJECTS.total;
+  const subjectKey = subj === SUBJECTS[subjectKeyRaw] ? subjectKeyRaw : 'total'; // 解析后的实际口径（回显用）
+  const ratioRaw = Number(req.query.ratio);
+  const ratio = (Number.isFinite(ratioRaw) && ratioRaw > 0 && ratioRaw <= 100) ? ratioRaw : 60;
+
   // 1) 批次：按考试日期升序（严格时间先后）
   const batchRows = getBatchesOfClass.all(clazz);
   const batches = batchRows
     .map((b) => {
-      const passLine = computedPassLine(b.totalFull, b.passRatio);
+      // 当前口径的满分/及格线：单科口径取该科满分，总成绩口径取总满分
+      const subjectFull = Number(b[subj.fullKey]) || 0;
+      const passLine = computedPassLine(subjectFull, ratio);
       return {
         batchNo: b.batchNo,
         batchName: b.batchName || b.batchNo,
         totalFull: b.totalFull,
-        passLine,
-        configured: b.totalFull > 0,
+        subjectFull, // 当前判定口径的满分（单元格悬浮与表头展示用）
+        passLine,    // 当前判定口径的及格线
+        configured: subjectFull > 0,
         examDate: b.createdAt || b.firstDate || '',
         studentCount: b.studentCount,
         // 排序键：日期优先，日期缺失排最后，同日期按批号
@@ -138,15 +170,17 @@ router.get('/failures', authRequired, (req, res) => {
     const stu = byStudent.get(r.name);
     if (r.examNo && !stu.examNo) stu.examNo = r.examNo;
     const cfg = batchMap.get(r.batchNo);
+    const score = Number(r[subj.scoreKey]) || 0; // 当前口径的得分
     const passLine = cfg ? cfg.passLine : 0;
     stu.records.push({
       order: idx,
       batchNo: r.batchNo,
-      score: r.total,
+      score, // 当前口径得分（单元格展示）
       passLine,
       configured: cfg ? cfg.configured : false,
-      correctionScore: r.correctionScore === undefined ? null : r.correctionScore,
-      passed: cfg && cfg.configured ? r.total >= passLine : null,
+      correctionScore: subjectKey === 'total' && r.correctionScore !== undefined
+        ? r.correctionScore : null, // 订正分语义为总成绩订正，单科口径不参与判定
+      passed: cfg && cfg.configured ? score >= passLine : null,
       submitTime: r.submitTime,
     });
   });
@@ -197,15 +231,14 @@ router.get('/failures', authRequired, (req, res) => {
   rows.sort((a, b) => (b.failCount - a.failCount) || a.name.localeCompare(b.name, 'zh-Hans-CN'));
 
   // 4) 汇总信息 + 按批次聚合不及格学生名单
-  //    关联关系：scores.class + scores.batch_no → paper_batches（取 total_full/pass_ratio）
-  //    及格线判定：passLine = ROUND(total_full * pass_ratio / 100, 2)，不及格 = total < passLine
-  //    （仅对已配置批次 total_full > 0 生效；占位行 total_full = 0 跳过判定）
+  //    关联关系：scores.class + scores.batch_no → paper_batches（取当前判定口径科目的满分）
+  //    及格线判定：passLine = ROUND(科目满分 × ratio / 100, 2)，不及格 = 科目得分 < passLine
+  //    （仅对该科满分 > 0 的批次生效；该科未配置的批次跳过判定）
   // rows 已含零不及格学生，故「不及格人数」需按 failCount > 0 单独统计
   const failStudentCount = rows.filter((r) => r.failCount > 0).length;
   const zeroFailCount = rows.length - failStudentCount;
   const totalFailRecords = rows.reduce((sum, r) => sum + r.failCount, 0);
   batches.forEach((b) => {
-    const raw = batchRows.find((x) => x.batchNo === b.batchNo);
     // 该批次下全部不及格学生：从矩阵行中按 cell 反查，分数升序（低的更需要关注）、同分按姓名
     const students = [];
     rows.forEach((r) => {
@@ -225,7 +258,6 @@ router.get('/failures', authRequired, (req, res) => {
     b.failRate = b.studentCount > 0
       ? Math.round((b.failCount / b.studentCount) * 10000) / 100
       : 0;
-    b.configured = raw ? raw.totalFull > 0 : b.configured;
     delete b._sortDate;
   });
 
@@ -233,6 +265,9 @@ router.get('/failures', authRequired, (req, res) => {
     code: 0,
     data: {
       clazz,
+      subject: subjectKey,   // 回显当前判定口径（前端下拉同步用）
+      subjectLabel: subj.label,
+      ratio,                 // 回显当前比例（%）
       batches,
       rows,
       summary: {

@@ -1,11 +1,29 @@
 <template>
   <div>
     <el-card class="page-card" shadow="never">
-      <!-- 标题 + 班级按钮组 -->
+      <!-- 标题 + 判定条件 + 班级按钮组 -->
       <div class="header-row">
         <div class="page-title">
           <el-icon><WarningFilled /></el-icon>
           <span>不及格管理</span>
+        </div>
+        <div class="filter-group">
+          <el-select v-model="subject" class="filter-select" @change="handleFilterChange">
+            <el-option
+              v-for="s in SUBJECT_OPTIONS"
+              :key="s.value"
+              :label="`不及格类别：${s.label}`"
+              :value="s.value"
+            />
+          </el-select>
+          <el-select v-model="ratio" class="filter-select filter-ratio" @change="handleFilterChange">
+            <el-option
+              v-for="r in RATIO_OPTIONS"
+              :key="r.value"
+              :label="`比例：${r.label}`"
+              :value="r.value"
+            />
+          </el-select>
         </div>
         <el-radio-group
           v-if="classes.length"
@@ -129,6 +147,33 @@ const rows = ref([]);
 const summary = ref({ batchCount: 0, failStudentCount: 0, totalFailRecords: 0, classStudentCount: 0 });
 const loading = ref(false);
 
+// ---- 判定条件双下拉：类别 + 比例（与标题同行，切换即刷新矩阵）----
+const SUBJECT_OPTIONS = [
+  { value: 'total', label: '总成绩' },
+  { value: 'choice', label: '选择题' },
+  { value: 'spreadsheet', label: '电子表格' },
+  { value: 'access', label: 'Access' },
+  { value: 'python', label: 'Python' },
+  { value: 'composite', label: '综合题' },
+];
+const RATIO_OPTIONS = [
+  { value: 60, label: '60%' },
+  { value: 70, label: '70%' },
+  { value: 80, label: '80%' },
+];
+const subject = ref('total'); // 默认总成绩
+const ratio = ref(60);        // 默认 60%
+
+/** 当前类别中文名（弹层内提示等展示用） */
+const subjectLabel = computed(() => {
+  const hit = SUBJECT_OPTIONS.find((s) => s.value === subject.value);
+  return hit ? hit.label : '总成绩';
+});
+
+function handleFilterChange() {
+  fetchMatrix(); // 切换类别/比例 → 按当前班级 + 新判定口径即时重取矩阵
+}
+
 // 是否存在不及格数据（决定空状态）
 const hasFailData = computed(() => batches.value.some((b) => b.students && b.students.length));
 
@@ -165,10 +210,11 @@ function dateLabel(b) {
   return d ? `（时间：${d}）` : '';
 }
 
-/** 不及格率行：66.13%（20）；总分缺失或为 0（未配置批次）则省略括号部分 */
+/** 不及格率行：66.13%（20）；当前口径满分缺失或为 0（该科未配置批次）则省略括号部分
+ *  括号内为「当前判定口径」的满分：总成绩口径=总满分，单科口径=该科满分 */
 function rateLabel(b) {
-  const full = Number(b.totalFull);
-  if (!b.totalFull || !Number.isFinite(full) || full <= 0) return `${b.failRate}%`;
+  const full = Number(b.subjectFull);
+  if (!b.subjectFull || !Number.isFinite(full) || full <= 0) return `${b.failRate}%`;
   return `${b.failRate}%（${full}）`;
 }
 
@@ -202,7 +248,8 @@ function cellMarkArrow(cell) {
  */
 function cellTitle(b, cell) {
   const parts = [cell.name, `${cell.score} 分`];
-  if (b && b.totalFull > 0) parts.push(`（满分 ${b.totalFull}，及格 ${b.passLine}）`);
+  // 满分/及格线按当前判定口径展示（subjectFull=当前口径满分，未配置则省略）
+  if (b && b.subjectFull > 0) parts.push(`（满分 ${b.subjectFull}，及格 ${b.passLine}）`);
   const mark = cellMarkText(cell);
   if (mark) parts.push(mark);
   return parts.join(' ');
@@ -247,7 +294,7 @@ async function fetchMatrix() {
   if (!currentClass.value) return;
   loading.value = true;
   try {
-    const res = await getFailureMatrix(currentClass.value);
+    const res = await getFailureMatrix(currentClass.value, subject.value, ratio.value);
     const data = res.data || {};
     batches.value = data.batches || [];
     rows.value = data.rows || [];
@@ -284,6 +331,21 @@ onMounted(fetchClasses);
   gap: 8px;
   font-weight: 600;
   font-size: 16px;
+}
+
+/* 判定条件双下拉：与标题同行、紧凑间距（两个下拉框协调并排，风格与页面一致） */
+.filter-group {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.filter-select {
+  width: 185px;
+}
+
+.filter-ratio {
+  width: 175px;
 }
 
 .class-group {
