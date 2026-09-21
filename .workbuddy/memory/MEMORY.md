@@ -1,6 +1,7 @@
 # MEMORY.md - score-radar 项目长期笔记
 
-## 部署·双实例 cjgl + cjglzq（2026-09-15 均已上线,未 commit）
+## 部署·双实例 cjgl + cjglzq（2026-09-15 上线,09-21 验收通过）
+- **2026-09-21 验收+补部**:验收 13 项全绿(重启隔离双向实测 17 探测 0 失败;两库各自演化 cjgl 1252/395/7 vs cjglzq 1253/1519/28);同日发现**线上滞后两版本致优生管理页空白**——本地 commit 从未同步服务器,已补增量 rsync+pm2 restart,两站现与本地 HEAD 一致。**铁律:commit≠已上线;凡 web/server 变更收尾必问"是否同步线上",用户的"不部署"仅当日该次有效**。certbot dry-run 需后台跑≥5 分钟(被 SIGKILL 会留 pending 授权污染,重跑即清)。
 - **cjglzq 第二实例**：/var/www/cjglzq、端口 3001、pm2 score-radar-zq、独立 JWT_SECRET、**全新自举库**（不含旧站二次导入数据）；证书至 2026-12-14；crontab 03:15 备份错峰。cross-write 实证隔离（写入只落新库），旧站基线 1252/395/7/1 验证未动。students 接口字段是 exam_no 蛇形。
 - **http2/default 站点告警**：Ubuntu default 站点 443 无 http2 与两新站 `listen 443 ssl http2` 重定义告警，用户拍板保留 http2（告警无害、SNI 命中不受影响）；去掉则 h2 降级 1.1。根治需统一 default 声明，未动。
 - 仓库新增：deploy/nginx/cjglzq...conf + deploy/pm2/ecosystem-cjglzq.config.js（独立配置文件防 rsync 互覆盖）；DEPLOY.md 双实例总览表。增量更新两站时 exclude 列表要加入对方的配置文件。
