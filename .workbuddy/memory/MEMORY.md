@@ -28,6 +28,14 @@
 - 前端 mergeSavedOrder:旧 localStorage 列存档无 class 键时,新列插到定义前邻列在存档中的位置之后(班级永远紧跟批号),不追加末尾;用户自定义排列与可见性保留。
 - QA 7/7 PASS(含 16--x→16班边界、导出解包、四场景存档推演)。
 
+## 优生管理页面（2026-09-21 交付，未 commit）
+- 文件：`web/src/views/analysis/AnalysisTopStudents.vue`（重写）、`server/src/routes/analysis.js`（+`GET /top-students`）、`web/src/api/analysis.js`（+`getTopStudentMatrix`）、`server/src/utils/paperBatch.js`（+`computedExcellentLine`）。文档 `docs/prd-top-students.md`、`docs/arch-top-students.md`。未动 AnalysisFailures.vue / db.js / router / index.js。
+- **口径（不及格页的严格镜像、判定方向相反）**：优秀线 `ROUND(该科满分×优秀比例/100,2)`，得分 **≥** 线 = 达优；比例 80/85/90 默认 80（不及格页 60/70/80 默认 60），**例为 query 参数、运行时计算、不读 `paper_batches.pass_ratio`、不改表**；该科满分 ≤0 跳过判定（不达优、优秀率 0%、表头省括号、不参与三态）。
+- **单元格三态（不读任何 correction_* 订正分）**：`dropped`↓（更晚批次**存在**未达优）> `new`↗（首次达优）> `stable`✓。注意 PRD 初稿写的「再无达优」已作废，以「存在未达优」为准——干预信号更敏感，能暴露波动型学生。列内名单**分数降序**（不及格页升序）；右侧「优秀次数」el-tag **≥2 success / =1 warning / 0 info**（仅顶档反转，其余对称）。
+- **关键行为**：无人达优**不显示空状态**，v-if 与不及格页逐字一致 `!loading && (!classes.length || !batches.length)`，仍渲染矩阵 + 全班 0 次名单，每列首行「暂无优秀学生」。这是两页体验一致的核心，勿改。
+- **连带修复（基线页既有缺陷）**：`SUBJECTS[key] || SUBJECTS.total` 缺 `hasOwnProperty` 校验，`subject=constructor/__proto__/toString` 会命中 `Object.prototype` → 满分取 0 → 返回 200 但静默空矩阵。已在 analysis.js 顶部加共用 `hasOwn`，`/failures` 与 `/top-students` **两路由一并修**以保持一致。
+- QA 两轮全绿：第 1 轮 100/100、第 2 轮 154/154，最终路由 NoOne。有效手法：起 4 个隔离服务（含 `git show HEAD:` 基线版、以及「单独还原修复前写法」的对照版）做逐字节对跑，能精确证明改动范围未外溢；DB 副本一律放 /tmp，禁止触碰 `server/data/score_radar.db`。
+
 ## 项目概况
 成绩管理后台系统：Vue3 组合式 API + Vite + Element Plus + Pinia（web/，端口 5174）；Express + better-sqlite3 + JWT（server/，端口 3000）。默认账号 admin/admin123。
 
