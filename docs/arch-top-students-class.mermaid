@@ -1,0 +1,91 @@
+classDiagram
+    class PaperBatchUtil {
+        <<util>>
+        +computedPassLine(full, ratio) number
+        +computedExcellentLine(full, ratio) number
+    }
+    class AnalysisRouter {
+        <<route>>
+        -SUBJECTS: object
+        -getBatchesOfClass: Statement
+        -getScoresOfClass: Statement
+        +GET_classes(req, res) void
+        +GET_failures(req, res) void
+        +GET_top_students(req, res) void
+    }
+    class BatchColumn {
+        +batchNo: string
+        +batchName: string
+        +totalFull: number
+        +subjectFull: number
+        +excellentLine: number
+        +configured: boolean
+        +examDate: string
+        +studentCount: number
+        +excellentCount: number
+        +excellentRate: number
+        +students: ExcellentStudent[]
+    }
+    class ExcellentStudent {
+        +name: string
+        +examNo: string
+        +score: number
+        +status: string
+        +prevExcellent: boolean
+    }
+    class MatrixRow {
+        +name: string
+        +examNo: string
+        +excellentCount: number
+        +stableCount: number
+        +newCount: number
+        +droppedCount: number
+        +cells: Record~batchNo, Cell~
+    }
+    class Cell {
+        +score: number
+        +excellentLine: number
+        +status: string
+        +prevExcellent: boolean
+    }
+    class Summary {
+        +batchCount: number
+        +excellentStudentCount: number
+        +zeroExcellentCount: number
+        +totalExcellentRecords: number
+        +classStudentCount: number
+    }
+    class AnalysisApi {
+        <<api>>
+        +getAnalysisClasses() Promise
+        +getFailureMatrix(clazz, subject, ratio) Promise
+        +getTopStudentMatrix(clazz, subject, ratio) Promise
+    }
+    class AnalysisTopStudentsView {
+        <<vue>>
+        -classes: string[]
+        -currentClass: string
+        -batches: BatchColumn[]
+        -rows: MatrixRow[]
+        -summary: Summary
+        -loading: boolean
+        -subject: string
+        -ratio: number
+        +fetchClasses() Promise
+        +fetchMatrix() Promise
+        +handleFilterChange() void
+        +handleClassChange() void
+        +rateLabel(b) string
+        +cellMarkText(cell) string
+        +cellMarkArrow(cell) string
+        +cellTitle(b, cell) string
+        +excellentCountTagType(n) string
+    }
+    AnalysisRouter ..> PaperBatchUtil : computedExcellentLine
+    AnalysisRouter ..> BatchColumn : 组装(列)
+    BatchColumn "1" *-- "0..*" ExcellentStudent : students
+    AnalysisRouter ..> MatrixRow : 组装(行)
+    MatrixRow "1" *-- "0..*" Cell : cells
+    AnalysisRouter ..> Summary : 组装
+    AnalysisTopStudentsView ..> AnalysisApi : 调用
+    AnalysisApi ..> AnalysisRouter : HTTP GET

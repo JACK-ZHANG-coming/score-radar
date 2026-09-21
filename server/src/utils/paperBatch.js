@@ -11,6 +11,19 @@ function computedPassLine(totalFull, passRatio) {
 }
 
 /**
+ * 计算优秀线（运行时，不落库）：ROUND(full × ratio / 100, 2)
+ * 与 computedPassLine 同公式、独立命名：优秀线语义 ≠ 及格线，避免调用方误用。
+ * ratio 为「优生管理」页当次查询选择的优秀比例（80/85/90），
+ * 与 paper_batches.pass_ratio 无关：不读取、不写入、不加列。
+ * 保留两位小数，避免浮点误差。
+ */
+function computedExcellentLine(full, ratio) {
+  const f = Number(full) || 0;
+  const r = Number(ratio) || 0;
+  return Math.round((f * r) / 100 * 100) / 100;
+}
+
+/**
  * 派生 created_at：取该批号下 scores.submit_time 出现最多的日期（众数），格式 YYYY-MM-DD；
  * 若无任何成绩记录，取当天 date('now','localtime')。
  */
@@ -58,4 +71,9 @@ function ensurePaperBatch(batchNo) {
   ensureStmt.run({ batch_no: bn });
 }
 
-module.exports = { ensurePaperBatch, computedPassLine, deriveCreatedAt };
+module.exports = {
+  ensurePaperBatch,
+  computedPassLine,
+  computedExcellentLine,
+  deriveCreatedAt,
+};

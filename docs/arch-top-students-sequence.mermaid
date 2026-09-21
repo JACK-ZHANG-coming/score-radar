@@ -1,0 +1,32 @@
+sequenceDiagram
+    participant V as AnalysisTopStudents.vue
+    participant A as web/src/api/analysis.js
+    participant R as server/src/routes/analysis.js
+    participant U as utils/paperBatch.js
+    participant DB as better-sqlite3
+
+    V->>A: getAnalysisClasses()
+    A->>R: GET /api/analysis/classes (authRequired)
+    R->>DB: SELECT DISTINCT class FROM scores
+    DB-->>R: class 列表
+    R-->>A: { code:0, data:{ classes, stats } }
+    A-->>V: classes[]
+    V->>V: currentClass = classes[0]
+
+    V->>A: getTopStudentMatrix(clazz, subject, ratio)
+    A->>R: GET /api/analysis/top-students?class&subject&ratio
+    R->>R: 校验 clazz(400) / 解析 subject(回退 total) / ratio(回退 80)
+    R->>U: computedExcellentLine(subjectFull, ratio)
+    U-->>R: excellentLine
+    R->>DB: getBatchesOfClass.all(clazz)
+    DB-->>R: batchRows
+    R->>DB: getScoresOfClass.all(clazz)
+    DB-->>R: scoreRows
+    R->>R: 达优判定 excellent = score >= excellentLine (未配置 → null)
+    R->>R: 三态收敛 dropped > new > stable + prevExcellent
+    R->>R: 列内分数降序 / 右侧次数降序 / summary 汇总
+    R-->>A: { code:0, data:{ clazz, subject, subjectLabel, ratio, batches, rows, summary } }
+    A-->>V: data
+    V->>V: 渲染 matrix-panel + summary-panel + legend
+
+    Note over V,R: 切换班级 / 优秀类别 / 比例 → handleFilterChange|handleClassChange → fetchMatrix() 重新取数

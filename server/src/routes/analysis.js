@@ -1,9 +1,17 @@
 const express = require('express');
 const db = require('../db');
 const { authRequired } = require('../middleware/auth');
-const { computedPassLine } = require('../utils/paperBatch');
+const { computedPassLine, computedExcellentLine } = require('../utils/paperBatch');
 
 const router = express.Router();
+
+/**
+ * 自有属性判定（白名单校验用）：SUBJECTS 是普通对象字面量，
+ * 直接以 SUBJECTS[key] 取值会命中 Object.prototype 上的继承属性
+ * （如 constructor / __proto__ / toString），导致口径解析静默取到非预期值。
+ * 故统一用 hasOwnProperty 判断「是否为声明的合法口径键」。
+ */
+const hasOwn = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
 
 /**
  * 班级名排序键：提取前导数字参与数值排序（5班 < 7班 < 16班），
@@ -125,9 +133,10 @@ router.get('/failures', authRequired, (req, res) => {
   if (!clazz) return res.status(400).json({ code: 400, message: '班级参数不能为空' });
 
   // 判定口径参数（非法值回退默认，不报错：等效于「总成绩 + 60%」）
+  // 仅接受 SUBJECTS 的自有键（hasOwn 避免 constructor/__proto__ 等继承属性被误判为合法口径）
   const subjectKeyRaw = String(req.query.subject || 'total');
-  const subj = SUBJECTS[subjectKeyRaw] || SUBJECTS.total;
-  const subjectKey = subj === SUBJECTS[subjectKeyRaw] ? subjectKeyRaw : 'total'; // 解析后的实际口径（回显用）
+  const subjectKey = hasOwn(SUBJECTS, subjectKeyRaw) ? subjectKeyRaw : 'total'; // 解析后的实际口径（回显用）
+  const subj = SUBJECTS[subjectKey];
   const ratioRaw = Number(req.query.ratio);
   const ratio = (Number.isFinite(ratioRaw) && ratioRaw > 0 && ratioRaw <= 100) ? ratioRaw : 60;
 
@@ -275,6 +284,189 @@ router.get('/failures', authRequired, (req, res) => {
         failStudentCount,
         zeroFailCount,
         totalFailRecords,
+        classStudentCount: new Set(scoreRows.map((r) => r.name)).size,
+      },
+    },
+  });
+});
+
+/** 优生管理默认优秀比例（%）：非法 ratio 回退值，与 /failures 的 60 对称 */
+const DEFAULT_EXCELLENT_RATIO = 80;
+
+/**
+ * GET /api/analysis/top-students  某班级的「优生追踪矩阵」（与 /failures 严格对称、判定方向相反）
+ * query: class（必填）、subject（优秀类别：total/choice/spreadsheet/access/python/composite，默认 total）
+ *        ratio（优秀比例：页面下拉 80/85/90，后端宽容接收 0<x<=100 的数，非法回退 80）
+ * 行 = 学生，列 = 考试批次（按时间先后升序），单元格 = 达优记录
+ * 判定口径：所选科目得分 >= ROUND(该科目满分 × ratio / 100, 2)；该科满分 <= 0（未配置）跳过判定。
+ * 单元格三态（不读取任何 correction_* 订正分，仅按批次时间序前后对比）：
+ *   dropped ↓ 更晚批次中存在「未达优」记录（优先级最高，干预信号）
+ *   new     ↗ 该批次为该生首次达优（更早批次均无达优记录）
+ *   stable  ✓ 其余（更早批次已有达优记录，且后续未掉出）
+ * 比例仅作为 query 参数参与运行时计算：不读 paper_batches.pass_ratio、不落库、不加列。
+ */
+router.get('/top-students', authRequired, (req, res) => {
+  const clazz = String(req.query.class || '').trim();
+  if (!clazz) return res.status(400).json({ code: 400, message: '班级参数不能为空' });
+
+  // 判定口径参数（非法值回退默认，不报错：等效于「总成绩 + 80%」）
+  // 仅接受 SUBJECTS 的自有键（hasOwn 避免 constructor/__proto__ 等继承属性被误判为合法口径）
+  const subjectKeyRaw = String(req.query.subject || 'total');
+  const subjectKey = hasOwn(SUBJECTS, subjectKeyRaw) ? subjectKeyRaw : 'total'; // 解析后的实际口径（回显用）
+  const subj = SUBJECTS[subjectKey];
+  const ratioRaw = Number(req.query.ratio);
+  const ratio = (Number.isFinite(ratioRaw) && ratioRaw > 0 && ratioRaw <= 100)
+    ? ratioRaw
+    : DEFAULT_EXCELLENT_RATIO;
+
+  // 1) 批次：按考试日期升序（严格时间先后，与 /failures 完全同序）
+  const batchRows = getBatchesOfClass.all(clazz);
+  const batches = batchRows
+    .map((b) => {
+      // 当前口径的满分/优秀线：单科口径取该科满分，总成绩口径取总满分
+      const subjectFull = Number(b[subj.fullKey]) || 0;
+      const excellentLine = computedExcellentLine(subjectFull, ratio);
+      return {
+        batchNo: b.batchNo,
+        batchName: b.batchName || b.batchNo,
+        totalFull: b.totalFull,
+        subjectFull,    // 当前判定口径的满分（单元格悬浮与表头展示用）
+        excellentLine,  // 当前判定口径的优秀线（运行时计算，不落库）
+        configured: subjectFull > 0,
+        examDate: b.createdAt || b.firstDate || '',
+        studentCount: b.studentCount,
+        // 排序键：日期优先，日期缺失排最后，同日期按批号
+        _sortDate: b.createdAt || b.firstDate || '9999-12-31',
+      };
+    })
+    .sort((a, b) => (a._sortDate === b._sortDate
+      ? a.batchNo.localeCompare(b.batchNo)
+      : a._sortDate.localeCompare(b._sortDate)));
+
+  // 批次序号映射（三态判定的唯一时间基准）
+  const orderOf = new Map();
+  batches.forEach((b, i) => orderOf.set(b.batchNo, i));
+  const batchMap = new Map(batches.map((b) => [b.batchNo, b]));
+
+  // 2) 成绩：按学生归集（按 name 归集，examNo 取首个非空值）
+  const scoreRows = getScoresOfClass.all(clazz);
+  const byStudent = new Map();
+  scoreRows.forEach((r) => {
+    const idx = orderOf.get(r.batchNo);
+    if (idx === undefined) return; // 该批次不在本班级批次列表中（理论上不会）
+    if (!byStudent.has(r.name)) byStudent.set(r.name, { name: r.name, examNo: r.examNo, records: [] });
+    const stu = byStudent.get(r.name);
+    if (r.examNo && !stu.examNo) stu.examNo = r.examNo;
+    const cfg = batchMap.get(r.batchNo);
+    const score = Number(r[subj.scoreKey]) || 0; // 当前口径的得分
+    stu.records.push({
+      order: idx,
+      batchNo: r.batchNo,
+      score,                                     // 当前口径得分（单元格展示）
+      excellentLine: cfg ? cfg.excellentLine : 0,
+      configured: cfg ? cfg.configured : false,
+      // 三态基础判定：true=达优 / false=未达优 / null=该批次未配置该科，跳过判定
+      excellent: cfg && cfg.configured ? score >= cfg.excellentLine : null,
+      submitTime: r.submitTime,
+    });
+  });
+
+  // 3) 组装名单行：包含该班全部学生（含零达优学生，excellentCount = 0），不做过滤
+  const rows = [];
+  byStudent.forEach((stu) => {
+    // 仅「已配置批次 + 判定为达优」的记录参与矩阵与三态
+    const excellentRecords = stu.records.filter((r) => r.configured && r.excellent === true);
+
+    const cells = {};
+    let stableCount = 0;
+    let newCount = 0;
+    let droppedCount = 0;
+    excellentRecords.forEach((r) => {
+      // 此前已持续优秀：更早批次中存在达优记录
+      const prevExcellent = stu.records.some((o) => o.order < r.order && o.excellent === true);
+      // 后续掉出：更晚批次中存在未达优记录（excellent === null 的未配置批次不参与）
+      const laterDropped = stu.records.some((o) => o.order > r.order && o.excellent === false);
+
+      // 互斥优先级：dropped > new > stable
+      let status = 'stable';
+      if (laterDropped) {
+        status = 'dropped';
+        droppedCount += 1;
+      } else if (!prevExcellent) {
+        status = 'new';
+        newCount += 1;
+      } else {
+        status = 'stable';
+        stableCount += 1;
+      }
+
+      cells[r.batchNo] = {
+        score: r.score,
+        excellentLine: r.excellentLine,
+        status,
+        prevExcellent,
+      };
+    });
+
+    rows.push({
+      name: stu.name,
+      examNo: stu.examNo || '',
+      excellentCount: excellentRecords.length,
+      stableCount,
+      newCount,
+      droppedCount,
+      cells,
+    });
+  });
+
+  // 排序：优秀次数降序（次数最多的在前，0 次沉底），同次数按姓名升序
+  rows.sort((a, b) => (b.excellentCount - a.excellentCount)
+    || a.name.localeCompare(b.name, 'zh-Hans-CN'));
+
+  // 4) 汇总信息 + 按批次聚合优生名单
+  //    优秀线判定：excellentLine = ROUND(该科满分 × ratio / 100, 2)，达优 = 该科得分 >= excellentLine
+  //    （仅对该科满分 > 0 的批次生效；该科未配置的批次跳过判定）
+  // rows 已含零达优学生，故「优生人数」需按 excellentCount > 0 单独统计
+  const excellentStudentCount = rows.filter((r) => r.excellentCount > 0).length;
+  const zeroExcellentCount = rows.length - excellentStudentCount;
+  const totalExcellentRecords = rows.reduce((sum, r) => sum + r.excellentCount, 0);
+  batches.forEach((b) => {
+    // 该批次下全部达优学生：从矩阵行中按 cell 反查，分数降序（高分在前）、同分按姓名
+    const students = [];
+    rows.forEach((r) => {
+      const cell = r.cells[b.batchNo];
+      if (!cell) return;
+      students.push({
+        name: r.name,
+        examNo: r.examNo || '',
+        score: cell.score,
+        status: cell.status,
+        prevExcellent: cell.prevExcellent,
+      });
+    });
+    students.sort((x, y) => (y.score - x.score) || x.name.localeCompare(y.name, 'zh-Hans-CN'));
+    b.students = students;
+    b.excellentCount = students.length;
+    b.excellentRate = b.studentCount > 0
+      ? Math.round((b.excellentCount / b.studentCount) * 10000) / 100
+      : 0;
+    delete b._sortDate;
+  });
+
+  res.json({
+    code: 0,
+    data: {
+      clazz,
+      subject: subjectKey,   // 回显当前判定口径（前端下拉同步用）
+      subjectLabel: subj.label,
+      ratio,                 // 回显当前比例（%）
+      batches,
+      rows,
+      summary: {
+        batchCount: batches.length,
+        excellentStudentCount,
+        zeroExcellentCount,
+        totalExcellentRecords,
         classStudentCount: new Set(scoreRows.map((r) => r.name)).size,
       },
     },
