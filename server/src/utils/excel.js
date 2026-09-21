@@ -1,30 +1,48 @@
 const XLSX = require('xlsx');
 
 /**
- * 修复表头/单元格中文乱码。仅处理含 Latin-1 高位字符（\u0080-\u00ff）的字符串，两种形态：
+ * 修复表头/单元格中文乱码。仅处理含 Latin-1 高位字符（\u0080-\u00ff）的字符串，三种形态：
  * A.「UTF-8 被按单字节切开」：SheetJS 对无 BOM 文本（TSV/CSV 伪装 xlsx）无 codepage 时
- *    按 latin1 切字节，UTF-8 中文变成每个字节一字（"序号"→"åºå·"）。
+ *    按 latin1 切字节，UTF-8 中文变成每个字节一字（“序号”→“åºå·”）。
  *    修复 = 字节按严格 UTF-8 解码（fatal，多字节序列非法即抛错）。
- *    必须让 UTF-8 先行：UTF-8 解码有结构校验，能可靠自证；GBK 对几乎任意字节都能
- *    解出"合法"汉字（本形态走 GBK 会解出二次乱码"搴忓彿"，不可逆）。
- * B.「GBK 双重编码」：历史文件形态（"序号"→"ÐòºÅ"，字节 D0 F2 BA C5 不是合法 UTF-8
+ * B.「GBK 双重编码」：历史文件形态（“序号”→“ÐòºÅ”，字节 D0 F2 BA C5 不是合法 UTF-8
  *    序列 → 形态 A 抛错兜底到 GBK），修复 = 字节按 GBK 解码。
+ *    必须让 UTF-8 先行：UTF-8 解码有结构校验，能可靠自证；GBK 对几乎任意字节都能
+ *    解出“合法”汉字（UTF-8 形态走 GBK 会解出二次乱码“搴忓彿”，不可逆）。
+ * C.「双解码成功碰撞」（fixEncoding v2 暴露）：GBK 中文串的字节恰好也是合法 UTF-8
+ *    （如「学校」GBK D1 A7 D0 A3 = U+0467 U+0423）→ 形态 A 路径返回西里尔字母“ѧУ”
+ *    等非中文结果，中文永不出头，表现为“学校”表头键名不是“学校”而误报缺列。
+ *    仲裁 = 严格 UTF-8 与严格 GBK 均解码成功时，仅一种结果含 CJK 统一汉字 →
+ *    取含 CJK 的；都含或都不含 → 维持 UTF-8 优先。实测 GBK 字节被误当 UTF-8 时
+ *    解出的都是西里尔/希腊/哈尼文等非中文，该仲裁安全。
  */
 const gbkDecoder = new TextDecoder('gbk');
 const utf8StrictDecoder = new TextDecoder('utf-8', { fatal: true });
+const gbkStrictDecoder = new TextDecoder('gbk', { fatal: true });
+const CJK_RE = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/; // CJK 统一汉字（含扩展 A）
 function fixEncoding(value) {
   if (typeof value !== 'string') return value;
   if (!/[\u0080-\u00ff]/.test(value)) return value;
   const bytes = Buffer.from(value, 'latin1');
   // 形态 A：严格 UTF-8 还原（非法序列抛 TypeError → 落到形态 B）
+  let utf8Fixed = null;
   try {
-    return utf8StrictDecoder.decode(bytes);
+    utf8Fixed = utf8StrictDecoder.decode(bytes);
   } catch { /* 不是合法 UTF-8，继续尝试 GBK */ }
-  // 形态 B：GBK 还原（ TextDecoder 默认把不可解字节替换为 U+FFFD，含替换符则视为失败）
+  // 形态 B：严格 GBK 还原（fatal：不可解字节抛错 → 放弃）
+  let gbkFixed = null;
   try {
-    const fixed = gbkDecoder.decode(bytes);
-    if (!fixed.includes('\uFFFD')) return fixed;
+    gbkFixed = gbkStrictDecoder.decode(bytes);
   } catch { /* ignore */ }
+  // 形态 C：双解码均成功 → CJK 仲裁，仅一种含中文 → 取含中文的结果；否则维持 UTF-8 优先
+  if (utf8Fixed !== null && gbkFixed !== null) {
+    const u = CJK_RE.test(utf8Fixed);
+    const g = CJK_RE.test(gbkFixed);
+    if (g !== u) return g ? gbkFixed : utf8Fixed;
+    return utf8Fixed;
+  }
+  if (utf8Fixed !== null) return utf8Fixed;
+  if (gbkFixed !== null) return gbkFixed;
   return value;
 }
 
@@ -68,10 +86,16 @@ function parseSheet(buffer) {
   });
 }
 
-/** 检查必需表头是否齐全，返回缺失列表 */
+/** 表头键名归一化：去首尾空白（含全角空格 U+3000）与常见不可见字符（BOM/ZWSP/ZWNJ/软连字符） */
+const INVISIBLE_CHARS_RE = /^[\s\u3000\ufeff\u200b\u200c\u200d\u00ad]+|[\s\u3000\ufeff\u200b\u200c\u200d\u00ad]+$/g;
+function normalizeHeaderKey(h) {
+  return String(h).replace(INVISIBLE_CHARS_RE, '');
+}
+
+/** 检查必需表头是否齐全，返回缺失列表（两侧均归一化：trim 空白 + 全角空格 + 不可见字符） */
 function missingHeaders(headers, required) {
-  const set = new Set(headers.map((h) => String(h).trim()));
-  return required.filter((r) => !set.has(r));
+  const set = new Set(headers.map((h) => normalizeHeaderKey(h)));
+  return required.filter((r) => !set.has(normalizeHeaderKey(r)));
 }
 
 /**
