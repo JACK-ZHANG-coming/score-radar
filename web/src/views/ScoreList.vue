@@ -527,7 +527,7 @@
 </template>
 
 <script setup>
-import { computed, h, onMounted, reactive, ref, watch } from 'vue';
+import { computed, h, nextTick, onMounted, reactive, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { Search, Refresh, Plus, Upload, Download, Edit, Delete, UploadFilled, RefreshRight, Setting, Top, Bottom } from '@element-plus/icons-vue';
 import {
@@ -762,6 +762,56 @@ const emptyForm = () => ({
 });
 const form = reactive(emptyForm());
 
+// ---- 总成绩自动累计：任一科分数变化时，总成绩立即重算为五科之和（始终跟随口径） ----
+// Number() 归一 null/undefined → NaN 的兜底：NaN 参与 sum 后结果必为 NaN，故逐项兜底为 0
+const toNum = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+const sumOfSubjects = computed(() => {
+  const sum = toNum(form.choice) + toNum(form.spreadsheet) + toNum(form.access)
+    + toNum(form.python) + toNum(form.composite);
+  // 浮点长尾防御（如 0.1+0.2）：四舍五入到 2 位小数
+  return Math.round(sum * 100) / 100;
+});
+
+// 回填保护标志：openDialog 回填期间为 true，此次由 Object.assign 引起的
+// sumOfSubjects 变化不联动 total，避免把历史人工录入的 total 静默改写为五科之和
+const restoring = ref(false);
+watch(sumOfSubjects, (v) => {
+  if (restoring.value) return;
+  form.total = v;
+});
+
+// ---- 订正总成绩自动累计：任一科订正分变化（及原始分变化的连带重算）时联动 ----
+// 口径与 analysis 订正判定一致（analysis.js「订正了哪科哪科生效」）：
+// 已订正科取订正分、未订正科取原始分，之和即「订正后有效总分」。
+// 五科订正分全为空（null）时视为未订正 → 保持 null 不联动，
+// 避免给从未订正的学生凭空算出总订正（也不显示订正括号）。
+// corrNum：null/undefined/空串/非法数字 → null（未订正视作缺数，不计 0）
+const corrNum = (v) => {
+  if (v === null || v === undefined || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+};
+const CORR_FIELDS = [
+  ['correction_choice', 'choice'],
+  ['correction_spreadsheet', 'spreadsheet'],
+  ['correction_access', 'access'],
+  ['correction_python', 'python'],
+  ['correction_composite', 'composite'],
+];
+const sumOfCorrections = computed(() => {
+  const items = CORR_FIELDS.map(([ck, rk]) => ({ c: corrNum(form[ck]), r: toNum(form[rk]) }));
+  if (items.every((it) => it.c === null)) return null; // 全未订正 → 不联动
+  const sum = items.reduce((acc, it) => acc + (it.c ?? it.r), 0);
+  return Math.round(sum * 100) / 100; // 浮点长尾防御，同 sumOfSubjects
+});
+// 复用同一 restoring 标志：openDialog 回填（含 correction_* 历史值）期间
+// 拦截联动，历史人工录入的 correction_total 不被静默改写；v 为 null 表示
+// 用户把五科订正全部清空 → 总订正同步清空（未订正语义回归）
+watch(sumOfCorrections, (v) => {
+  if (restoring.value) return;
+  form.correction_total = v;
+});
+
 const rules = {
   exam_no: [{ required: true, message: '请输入考号', trigger: 'blur' }],
   name: [{ required: true, message: '请输入姓名', trigger: 'blur' }],
@@ -769,7 +819,23 @@ const rules = {
 
 function openDialog(row) {
   editingId.value = row?.id || null;
-  Object.assign(form, emptyForm(), row || {});
+  // 回填保护：Object.assign 赋五科新值会触发 sumOfSubjects/sumOfCorrections 变化，
+  // 若不加保护，watch 会把 total/correction_total 改写为「新五科之和/新订正合计」，
+  // 导致打开弹窗即静默篡改历史值。先置 restoring=true 拦截这一次联动，
+  // nextTick（本轮微任务）后恢复，此后用户手动改任一科，watch 正常联动。
+  restoring.value = true;
+  // 编辑时 total / correction_total 以行内原值为准（历史数据可能两值 ≠ 各自五科
+  // 之和）；新增时为 0 / null（未订正语义）
+  Object.assign(
+    form,
+    emptyForm(),
+    row || {},
+    {
+      total: row?.total ?? emptyForm().total,
+      correction_total: row?.correction_total ?? emptyForm().correction_total,
+    },
+  );
+  nextTick(() => { restoring.value = false; });
   dialogVisible.value = true;
 }
 
