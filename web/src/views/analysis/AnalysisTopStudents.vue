@@ -163,6 +163,7 @@ const RATIO_OPTIONS = [
   { value: 80, label: '80%' },
   { value: 85, label: '85%' },
   { value: 90, label: '90%' },
+  { value: 100, label: '100%' },
 ];
 const subject = ref('total'); // 默认总成绩
 const ratio = ref(80);        // 默认 80%
