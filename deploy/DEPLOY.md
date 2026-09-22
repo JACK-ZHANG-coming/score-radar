@@ -5,10 +5,12 @@
 
 ## 双实例总览（2026-09-15 起本仓库支持两套独立部署）
 
-| 实例 | 域名 | 代码目录 | 端口 | pm2 进程名 | 数据库 | nginx 配置 | pm2 配置 |
+| 实例 | 域名 | 代码目录 | 端口 | pm2 进程名 | 数据库 | nginx 配置 | 服务器侧 pm2 文件（真实密钥所在，rsync 永久排除） |
 |---|---|---|---|---|---|---|---|
-| cjgl（第一套） | cjgl.zhangqiang.hk.cn | /var/www/cjgl | 3000 | score-radar | /var/www/cjgl/server/data/score_radar.db | deploy/nginx/cjgl.zhangqiang.hk.cn.conf → sites-available/cjgl | deploy/pm2/ecosystem.config.js |
-| **cjglzq（第二套）** | cjglzq.zhangqiang.hk.cn | /var/www/cjglzq | **3001** | **score-radar-zq** | /var/www/cjglzq/server/data/score_radar.db（全新空库自举） | deploy/nginx/cjglzq.zhangqiang.hk.cn.conf → sites-available/cjglzq | deploy/pm2/ecosystem-cjglzq.config.js |
+| cjgl（第一套） | cjgl.zhangqiang.hk.cn | /var/www/cjgl | 3000 | score-radar | /var/www/cjgl/server/data/score_radar.db | sites-available/cjgl | **/var/www/cjgl/deploy/pm2/ecosystem.config.js** |
+| **cjglzq（第二套）** | cjglzq.zhangqiang.hk.cn | /var/www/cjglzq | **3001** | **score-radar-zq** | /var/www/cjglzq/server/data/score_radar.db（全新空库自举） | sites-available/cjglzq | **/var/www/cjglzq/deploy/pm2/ecosystem.config.js** |
+
+> ⚠️ 命名差异说明：仓库参考文件是 `deploy/pm2/ecosystem-cjglzq.config.js`（占位密钥），但服务器上 cjglzq 实际生效的密钥文件名是 `ecosystem.config.js`（09-15 部署时 scp 落地名称，内含真实 JWT_SECRET）。**rsync 的 `--exclude 'deploy/pm2/ecosystem.config.js'` 一条规则恰好同时保护了两个实例的真实密钥文件**；`ecosystem-cjglzq.config.js` 也一并无须同步（它只是仓库参考版）。增量部署统一用 DEPLOY.md 中的 exclude 清单即可，两处真实密钥均不会被覆盖。
 
 **两实例五完全独立**：目录树 / 进程 / 端口 / JWT_SECRET / 数据库文件，互不复用互不共享；各自独立 LE 证书与 crontab 备份（cjgl 03:00、cjglzq 03:15 错峰）。对任一实例做增量更新时，**rsync 目标路径必须写对**（下表命令把 cjgl 全文中的 `cjgl` 相关标识替换为 cjglzq 系即可：路径 /var/www/cjgl→cjglzq、exclude 加 `deploy/pm2/ecosystem-cjglzq.config.js`、pm2 restart score-radar-zq）。
 
