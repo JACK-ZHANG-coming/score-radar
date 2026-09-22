@@ -25,6 +25,11 @@
             />
           </el-select>
         </div>
+        <!-- 「不显示已订正」开关：仅过滤左侧矩阵为视角级过滤，不改原始数据口径 -->
+        <div class="toggle-group">
+          <el-switch v-model="hideCorrected" size="small" />
+          <span class="toggle-label">不显示已订正</span>
+        </div>
         <el-radio-group
           v-if="classes.length"
           v-model="currentClass"
@@ -61,7 +66,7 @@
             <!-- 试卷批次列：固定宽度 110px（不随内容/容器伸缩）；
                  class-name 用于精准压缩该列 .cell 的默认左右内边距，扩大内容可用宽度 -->
             <el-table-column
-              v-for="(b, i) in batches"
+              v-for="(b, i) in displayBatches"
               :key="b.batchNo"
               width="110"
               align="center"
@@ -79,7 +84,8 @@
                 <span v-if="!b.students.length && row.idx === 0" class="cell-placeholder">
                   暂无不及格学生
                 </span>
-                <!-- 单行紧凑展示：姓名 +（小字）分数与状态箭头，完整信息由 title 承载 -->
+                <!-- 单行紧凑展示：姓名 +（小字）分数与多状态标记（可并存），
+                     完整信息由 title 承载 -->
                 <div
                   v-else-if="b.students[row.idx]"
                   class="stu-cell"
@@ -88,9 +94,11 @@
                   <span class="stu-name">{{ b.students[row.idx].name }}</span>
                   <span class="stu-meta">
                     {{ b.students[row.idx].score }} 分<span
-                      v-if="cellMarkText(b.students[row.idx])"
-                      :class="['stu-arrow', cellMarkClass(b.students[row.idx])]"
-                    >{{ cellMarkArrow(b.students[row.idx]) }}</span>
+                      v-for="mk in cellMarks(b.students[row.idx])"
+                      :key="mk"
+                      :class="['stu-arrow', markClass(mk)]"
+                      :title="markText(mk, b.students[row.idx])"
+                    >{{ markArrow(mk) }}</span>
                   </span>
                 </div>
                 <span v-else class="cell-empty">—</span>
@@ -164,6 +172,25 @@ const RATIO_OPTIONS = [
 const subject = ref('total'); // 默认总成绩
 const ratio = ref(60);        // 默认 60%
 
+// 「不显示已订正」开关：默认关闭（展示全部）；开启后仅隐藏「订正通过（corrected）」
+// 的学生记录——laterPass（后续已及格但未订正）不代表问题闭环，保留显示
+const hideCorrected = ref(false);
+
+/**
+ * 视角级过滤派生数据（不改动 batches 原数组）：
+ * 开关开启时，按 status !== 'corrected' 过滤各批次 students，生成浅拷贝批次副本；
+ * 关闭时直接返回原始批次。批次表头统计（failCount/failRate 等）因基于同名字段
+ * 浅拷贝而保持原始口径，隐藏仅是「视图过滤」而非数据修改。
+ * 注意口径铁律：laterPass（后续已及格但未订正）不在隐藏范围，必须继续显示。
+ */
+const displayBatches = computed(() => {
+  if (!hideCorrected.value) return batches.value;
+  return batches.value.map((b) => ({
+    ...b,
+    students: (b.students || []).filter((stu) => stu.status !== 'corrected'),
+  }));
+});
+
 /** 当前类别中文名（弹层内提示等展示用） */
 const subjectLabel = computed(() => {
   const hit = SUBJECT_OPTIONS.find((s) => s.value === subject.value);
@@ -177,9 +204,10 @@ function handleFilterChange() {
 // 是否存在不及格数据（决定空状态）
 const hasFailData = computed(() => batches.value.some((b) => b.students && b.students.length));
 
-// 行驱动：行数 = 各批次不及格名单的最大长度（每列自上而下列出该批次不及格学生）
+// 行驱动：行数 = 各批次「当前展示口径」名单的最大长度（每列自上而下列出该批次不及格学生；
+// 开关开启/关闭切换时随 displayBatches 派生数组自动重算，行数与单元格数据保持同步）
 const matrixRows = computed(() => {
-  const max = batches.value.reduce(
+  const max = displayBatches.value.reduce(
     (m, b) => Math.max(m, (b.students && b.students.length) || 0),
     0,
   );
@@ -229,37 +257,53 @@ function cellClass(cell) {
   };
 }
 
-function cellMarkText(cell) {
-  if (cell.status === 'corrected') return `订正 ${cell.correctionScore} ✓`;
-  if (cell.status === 'laterPass') return '后及格 ↗';
+/** 取某学生的全量命中状态数组：优先读后端 marks（多状态可并存），
+ *  旧数据无 marks 字段时回退用主导态 status 推演单元素数组（向后兼容） */
+function cellMarks(cell) {
+  if (Array.isArray(cell.marks) && cell.marks.length) {
+    return cell.marks.filter((m) => m === 'corrected' || m === 'laterPass');
+  }
+  // 回退：status 主导态推演（corrected/laterPass 命中态才显示标记）
+  if (cell.status === 'corrected' || cell.status === 'laterPass') {
+    return [cell.status];
+  }
+  return [];
+}
+
+/** 单个状态的标记文案：订正 N 分 ✓ / 后及格 ↗（用于 title 与多标签渲染） */
+function markText(mark, cell) {
+  if (mark === 'corrected') return `订正 ${cell.correctionScore} ✓`;
+  if (mark === 'laterPass') return '后及格 ↗';
   return '';
 }
 
-/** 状态箭头（单行紧凑展示用）：后续已及格 ↗ / 已订正通过 ✓ */
-function cellMarkArrow(cell) {
-  if (cell.status === 'corrected') return '✓';
-  if (cell.status === 'laterPass') return '↗';
+/** 单个状态的箭头符号（单行紧凑展示） */
+function markArrow(mark) {
+  if (mark === 'corrected') return '✓';
+  if (mark === 'laterPass') return '↗';
   return '';
 }
 
 /**
- * 单元格完整信息（悬浮展示）：姓名 + 分数 + 满分/及格线 + 状态文案，
- * 保证单行紧凑后状态语义不丢失。
+ * 单元格完整信息（悬浮展示）：姓名 + 分数 + 满分/及格线 + 全量状态文案，
+ * 多状态并存时全部列出（如「订正 N ✓」+「后及格 ↗」），保证语义不丢失。
  */
 function cellTitle(b, cell) {
   const parts = [cell.name, `${cell.score} 分`];
   // 满分/及格线按当前判定口径展示（subjectFull=当前口径满分，未配置则省略）
   if (b && b.subjectFull > 0) parts.push(`（满分 ${b.subjectFull}，及格 ${b.passLine}）`);
-  const mark = cellMarkText(cell);
-  if (mark) parts.push(mark);
+  cellMarks(cell).forEach((m) => {
+    const t = markText(m, cell);
+    if (t) parts.push(t);
+  });
   return parts.join(' ');
 }
 
-function cellMarkClass(cell) {
-  return {
-    'mark-corrected': cell.status === 'corrected',
-    'mark-later': cell.status === 'laterPass',
-  };
+/** 单个状态的配色类名（多标签渲染时每个 mark 独立取色） */
+function markClass(mark) {
+  if (mark === 'corrected') return 'mark-corrected';
+  if (mark === 'laterPass') return 'mark-later';
+  return '';
 }
 
 // 参考图为白底黑字名单，状态通过文字标记而非整格底色区分
@@ -267,8 +311,18 @@ function cellStyle() {
   return { background: '#ffffff' };
 }
 
-// 右侧名单：全部学生（含零不及格），后端已按不及格次数降序、同次数按姓名升序排好
-const rankRows = computed(() => rows.value);
+// 右侧名单：全部学生（含零不及格）。开关开启时与左侧矩阵口径保持一致——
+// 「不及格次数」排除已订正通过的那几次（有效次数 = failCount - correctedCount），
+// 并按有效次数重排序（降序、同次数姓名升序）；关闭时为后端原始口径（全部次数）。
+const rankRows = computed(() => {
+  if (!hideCorrected.value) return rows.value;
+  const derived = rows.value.map((r) => ({
+    ...r,
+    failCount: Math.max(0, (r.failCount || 0) - (r.correctedCount || 0)),
+  }));
+  derived.sort((a, b) => (b.failCount - a.failCount) || a.name.localeCompare(b.name, 'zh-Hans-CN'));
+  return derived;
+});
 
 // 次数标签配色：≥2 红、1 橙、0 灰
 function failCountTagType(n) {
@@ -346,6 +400,19 @@ onMounted(fetchClasses);
 
 .filter-ratio {
   width: 175px;
+}
+
+/* 「不显示已订正」开关：置于判定条件组与班级按钮组之间，行内 span 承载文案（与页面 12px 辅助字号一致） */
+.toggle-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.toggle-label {
+  font-size: 12px;
+  color: #606266;
+  white-space: nowrap;
 }
 
 .class-group {

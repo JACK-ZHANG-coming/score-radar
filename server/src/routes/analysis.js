@@ -94,11 +94,18 @@ const getBatchesOfClass = db.prepare(`
   WHERE p.batch_no IN (SELECT DISTINCT batch_no FROM scores WHERE class = ? AND batch_no != '')
 `);
 
-/** 取某班级全部成绩记录（含五科分数与订正分；订正分=总成绩订正 correction_total） */
+/** 取某班级全部成绩记录（含五科分数与全口径订正分：总分订正 correction_total
+ *  及五科订正 correction_choice/spreadsheet/access/python/composite，供各判定口径分别取用） */
 const getScoresOfClass = db.prepare(`
   SELECT name, exam_no AS examNo, batch_no AS batchNo, total,
          choice, spreadsheet, access, python, composite,
-         correction_total AS correctionScore, submit_time AS submitTime
+         correction_total AS correctionTotal,
+         correction_choice AS correctionChoice,
+         correction_spreadsheet AS correctionSpreadsheet,
+         correction_access AS correctionAccess,
+         correction_python AS correctionPython,
+         correction_composite AS correctionComposite,
+         submit_time AS submitTime
   FROM scores
   WHERE class = ? AND batch_no != ''
 `);
@@ -109,12 +116,12 @@ const getScoresOfClass = db.prepare(`
  * 单科口径下批次「已配置」= 该科满分 > 0（其余科目的配置不参与）。
  */
 const SUBJECTS = {
-  total:       { label: '总成绩',   scoreKey: 'total',      fullKey: 'totalFull' },
-  choice:      { label: '选择题',   scoreKey: 'choice',     fullKey: 'choiceFull' },
-  spreadsheet: { label: '电子表格', scoreKey: 'spreadsheet', fullKey: 'spreadsheetFull' },
-  access:      { label: 'Access',   scoreKey: 'access',     fullKey: 'accessFull' },
-  python:      { label: 'Python',   scoreKey: 'python',     fullKey: 'pythonFull' },
-  composite:   { label: '综合题',   scoreKey: 'composite',  fullKey: 'compositeFull' },
+  total:       { label: '总成绩',   scoreKey: 'total',      fullKey: 'totalFull',       corrKey: 'correctionTotal' },
+  choice:      { label: '选择题',   scoreKey: 'choice',     fullKey: 'choiceFull',      corrKey: 'correctionChoice' },
+  spreadsheet: { label: '电子表格', scoreKey: 'spreadsheet', fullKey: 'spreadsheetFull', corrKey: 'correctionSpreadsheet' },
+  access:      { label: 'Access',   scoreKey: 'access',     fullKey: 'accessFull',      corrKey: 'correctionAccess' },
+  python:      { label: 'Python',   scoreKey: 'python',     fullKey: 'pythonFull',      corrKey: 'correctionPython' },
+  composite:   { label: '综合题',   scoreKey: 'composite',  fullKey: 'compositeFull',   corrKey: 'correctionComposite' },
 };
 
 /**
@@ -124,7 +131,8 @@ const SUBJECTS = {
  * 行 = 学生，列 = 考试批次（按时间先后升序），单元格 = 不及格记录
  * 判定口径：所选科目得分 < ROUND(该科目满分 × ratio / 100, 2)；该科满分 = 0（未配置）跳过判定。
  * 单元格状态：
- *   corrected  已二次订正通过（仅总成绩口径判定：correction_score >= 合格线）
+ *   corrected  已二次订正通过（按当前口径取对应订正分列：总分口径 correction_total，
+ *              单科口径如电子表格取 correction_spreadsheet；订正分 >= 合格线）
  *   laterPass  该生在后续批次中该科目已及格
  *   fail       仍未处理
  */
@@ -187,8 +195,10 @@ router.get('/failures', authRequired, (req, res) => {
       score, // 当前口径得分（单元格展示）
       passLine,
       configured: cfg ? cfg.configured : false,
-      correctionScore: subjectKey === 'total' && r.correctionScore !== undefined
-        ? r.correctionScore : null, // 订正分语义为总成绩订正，单科口径不参与判定
+      // 订正分按当前判定口径取分（总成绩口径读 correction_total，电子表格口径读
+      // correction_spreadsheet……）——各科订正分独立记录，订正了哪科哪科生效
+      correctionScore: r[subj.corrKey] !== undefined && r[subj.corrKey] !== null
+        ? r[subj.corrKey] : null,
       passed: cfg && cfg.configured ? score >= passLine : null,
       submitTime: r.submitTime,
     });
@@ -203,20 +213,26 @@ router.get('/failures', authRequired, (req, res) => {
     let correctedCount = 0;
     let laterPassCount = 0;
     failRecords.forEach((r) => {
-      // 订正通过：存在订正分且达到合格线
+      // 订正通过：存在订正分且达到合格线（独立判定，可与后续及格并存）
       const corrected = r.correctionScore !== null && r.correctionScore !== undefined
         && r.correctionScore !== '' && Number(r.correctionScore) >= r.passLine;
-      // 后续及格：该生在更晚的批次中存在及格记录
-      const laterPass = !corrected && stu.records.some(
+      // 后续及格：该生在更晚的批次中存在及格记录（独立判定，不与订正互斥）
+      const laterPass = stu.records.some(
         (o) => o.order > r.order && o.passed === true,
       );
       if (corrected) correctedCount += 1;
       else if (laterPass) laterPassCount += 1;
+      // marks 多状态聚合数组：两种命中状态并存时都展示（corrected 优先在前）
+      const marks = [];
+      if (corrected) marks.push('corrected');
+      if (laterPass) marks.push('laterPass');
       cells[r.batchNo] = {
         score: r.score,
         passLine: r.passLine,
         correctionScore: corrected ? Number(r.correctionScore) : null,
+        // status 为主导态（向后兼容既有消费方）；marks 为全量命中状态（可并存）
         status: corrected ? 'corrected' : (laterPass ? 'laterPass' : 'fail'),
+        marks: marks.length ? marks : ['fail'],
       };
     });
 
@@ -258,6 +274,8 @@ router.get('/failures', authRequired, (req, res) => {
         examNo: r.examNo || '',
         score: cell.score,
         status: cell.status,
+        // marks 全量命中状态（可并存）；向后兼容无 marks 的旧数据由前端回退 status 推演
+        marks: cell.marks || null,
         correctionScore: cell.correctionScore,
       });
     });
